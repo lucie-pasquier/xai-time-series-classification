@@ -29,7 +29,7 @@ from __future__ import annotations
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import StratifiedShuffleSplit
-from aeon.datasets import load_from_tsfile
+from aeon.datasets import load_from_ts_file
 
 # ── Project paths ─────────────────────────────────────────────────────────────
 PROJECT_ROOT  = Path(__file__).resolve().parents[2]
@@ -59,7 +59,7 @@ def _load_ts(path: Path) -> tuple[np.ndarray, np.ndarray]:
     y : ndarray, shape (n_samples,)               int, labels in {0, 1}
     """
     # aeon returns X as (n_samples, n_channels, n_timepoints) for return_type="numpy3d"
-    X_raw, y_raw = load_from_tsfile(str(path), return_type="numpy3d")
+    X_raw, y_raw = load_from_ts_file(str(path), return_type="numpy3d")
 
     # ECG200 is univariate — squeeze the channel dimension
     X = X_raw[:, 0, :]  # (n_samples, n_timesteps)

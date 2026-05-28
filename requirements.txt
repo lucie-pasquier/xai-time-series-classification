@@ -14,7 +14,7 @@ scikit-learn>=1.4
 torch>=2.2
 
 # ── Time series / UCR data loading ────────────────────────────────────────────
-aeon>=0.9           # provides load_from_tsfile for UCR .ts format
+aeon==1.4.0         # load_from_ts_file for UCR .ts format; renamed from load_from_tsfile in >=1.0
 
 # ── XAI ───────────────────────────────────────────────────────────────────────
 captum>=0.7         # Integrated Gradients via PyTorch
