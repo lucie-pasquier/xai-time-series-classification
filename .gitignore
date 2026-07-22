@@ -75,3 +75,6 @@ dmypy.json
 *.swp
 *.swo
 *~
+
+# Reference clones (read-only, never part of this project)
+_reference/
