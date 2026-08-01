@@ -8,3 +8,11 @@
 [medium seed2] test=0.840 collapsed=False CMI-FAz=0.673 conc=0.457 agr=0.98/0.86/0.82 (36s)
 [medium seed3] test=0.870 collapsed=False CMI-FAz=0.588 conc=0.398 agr=0.76/0.63/0.64 (39s)
 [medium seed4] test=0.890 collapsed=False CMI-FAz=0.530 conc=0.427 agr=0.74/0.60/0.48 (43s)
+[deep seed0] test=0.860 collapsed=False CMI-FAz=0.613 conc=0.667 agr=0.84/0.87/0.91 (61s)
+[deep seed1] test=0.900 collapsed=False CMI-FAz=0.726 conc=0.538 agr=0.95/0.91/0.96 (61s)
+[deep seed2] test=0.900 collapsed=False CMI-FAz=0.776 conc=0.655 agr=0.97/0.96/0.98 (59s)
+[deep seed3] test=0.930 collapsed=False CMI-FAz=0.789 conc=0.650 agr=0.98/0.95/0.97 (58s)
+[deep seed4] test=0.900 collapsed=False CMI-FAz=0.728 conc=0.634 agr=0.93/0.95/0.98 (69s)
+TOTAL 631s
+Model1 deterministic across refits: True
+DONE
