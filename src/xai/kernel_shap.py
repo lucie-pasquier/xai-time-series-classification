@@ -41,7 +41,8 @@ Stochasticity & reproducibility
 Dataset-agnostic by design
     Region grouping comes from the grid; the class is read from predict_proba's
     output width (tracks the predicted class; no binary assumption). Applies
-    unchanged to a longer, multi-class signal such as Sleep-EDF.
+    unchanged to a longer, multi-class, multi-channel signal such as Sleep-EDF (a region is a time
+    segment hidden across all channels).
 """
 
 from __future__ import annotations
@@ -121,9 +122,14 @@ def kernel_shap(
         return torch.as_tensor(np.asarray(probs), dtype=dtype)
 
     explainer = KernelShap(forward_func)
-    inputs = torch.as_tensor(signal[None, :], dtype=dtype)
-    baselines = torch.as_tensor(background[None, :], dtype=dtype)
-    feature_mask = torch.as_tensor(grid.labels[None, :], dtype=torch.long)
+    inputs = torch.as_tensor(signal[None], dtype=dtype)
+    baselines = torch.as_tensor(background[None], dtype=dtype)
+    # Same region id broadcast across channels: a region = a time segment spanning
+    # all channels (across-channel design). For a 1-D signal this is grid.labels[None].
+    # There are n_regions unique groups regardless of channel count, so the
+    # return_input_shape=False output stays (1, n_regions).
+    mask = np.broadcast_to(grid.labels, signal.shape).copy()
+    feature_mask = torch.as_tensor(mask[None], dtype=torch.long)
 
     attr = explainer.attribute(
         inputs,

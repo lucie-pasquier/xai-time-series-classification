@@ -36,7 +36,8 @@ Dataset-agnostic by design
     Region count comes from the grid; the number of classes is read from the
     predict_proba output width (the reliance tracks whichever class the model
     predicts on the original signal — no binary assumption). Applies unchanged to
-    a longer, multi-class signal such as Sleep-EDF.
+    a longer, multi-class, multi-channel signal such as Sleep-EDF (a region is a time
+    segment hidden across all channels).
 """
 
 from __future__ import annotations

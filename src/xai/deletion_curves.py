@@ -45,7 +45,8 @@ Dataset-agnostic by design
     read from the predict_proba output width (no binary assumption — the curve
     tracks whichever class the model predicts on the original signal); the 50%
     stop is a ratio, not a fixed step count. Applies unchanged to a longer,
-    multi-class signal such as Sleep-EDF.
+    multi-class, multi-channel signal such as Sleep-EDF (a region is a time
+    segment hidden across all channels).
 """
 
 from __future__ import annotations

@@ -1,0 +1,8 @@
+[seed0] test=0.830 bal=0.819 f1=0.866 auc=0.904 gap=+0.170 collapsed=False best_ep=80 (64s)
+[seed1] test=0.800 bal=0.783 f1=0.844 auc=0.863 gap=+0.000 collapsed=False best_ep=88 (67s)
+[seed2] test=0.750 bal=0.738 f1=0.800 auc=0.842 gap=+0.100 collapsed=False best_ep=126 (89s)
+[seed3] test=0.770 bal=0.747 f1=0.822 auc=0.805 gap=+0.130 collapsed=False best_ep=89 (69s)
+[seed4] test=0.740 bal=0.718 f1=0.797 auc=0.831 gap=+0.160 collapsed=False best_ep=71 (59s)
+
+params=1,202,690  test acc mean±std = 0.778±0.033  spread [0.740,0.830]  collapsed 0/5  TOTAL 349s
+DONE

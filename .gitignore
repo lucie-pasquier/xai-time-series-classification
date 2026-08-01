@@ -32,6 +32,12 @@ data/processed/*.npy
 data/processed/*.npz
 # .gitkeep is excluded from the above glob, so the directory stays tracked
 
+# ── Sleep-EDF data (large raw EDF ~8 GB; processed arrays regenerated) ─────────
+# Raw EDF/hypnogram data is too large to track; processed arrays are regenerated.
+data/sleep_edf/raw/
+data/sleep_edf/processed/*.npy
+data/sleep_edf/processed/*.npz
+
 # ── Model checkpoints ─────────────────────────────────────────────────────────
 results/checkpoints/*.pt
 results/checkpoints/*.pth

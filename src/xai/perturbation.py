@@ -53,9 +53,12 @@ Laplace — adapted from the authors' reference implementation (Apache 2.0)
 
 Dataset-agnostic by design
     Nothing here hard-codes ECG200 specifics. Signal length is read from the
-    signal / grid (never a literal 96), and no class count is assumed (PMs are
-    label-independent). The same code applies unchanged to a longer, multi-class
-    signal such as Sleep-EDF.
+    signal / grid (never a literal 96); no class count is assumed (PMs are
+    label-independent); and channel count is read from the signal — a signal may
+    be 1-D (T,) or multi-channel (C, T), the time axis being the last axis. A
+    region is a TIME segment hidden across all channels ("across-channel" design).
+    The same code applies unchanged to a longer, multi-class, multi-channel signal
+    such as Sleep-EDF.
 """
 
 from __future__ import annotations
@@ -86,9 +89,16 @@ def sample_mean_background(signal: np.ndarray, **_kwargs) -> np.ndarray:
     """Background filled with the sample-level mean of `signal` (PM: sample_mean).
 
     Sample-level: the mean of this single signal, matching the paper's per-sample
-    definitions — not a training-set statistic.
+    definitions — not a training-set statistic. For a multi-channel signal (C, T)
+    the mean is taken PER CHANNEL (each channel filled with its own mean), matching
+    the reference's multivariate SampleMean; for a 1-D signal this is the single
+    scalar mean (unchanged).
     """
-    return np.full_like(signal, float(np.mean(signal)))
+    if signal.ndim == 1:
+        return np.full_like(signal, float(np.mean(signal)))
+    # (C, T): each channel filled with its own mean along the time axis.
+    per_channel_mean = np.mean(signal, axis=-1, keepdims=True)
+    return np.broadcast_to(per_channel_mean, signal.shape).astype(float, copy=True)
 
 
 def laplace_background(signal: np.ndarray, **_kwargs) -> np.ndarray:
@@ -106,8 +116,15 @@ def laplace_background(signal: np.ndarray, **_kwargs) -> np.ndarray:
     NOT a smoother: this highlights curvature (sharp bends) and sends smooth
     stretches toward ~0. See the module docstring and DECISIONS_LOG.md for the
     correction history.
+
+    Multi-channel (C, T): the Laplacian is applied PER CHANNEL along the time axis
+    (channels are not mixed), matching the reference's per-channel multivariate
+    filtering; for a 1-D signal this is the plain 1-D Laplacian (unchanged).
     """
-    return _ndimage_laplace(signal, mode="reflect")
+    if signal.ndim == 1:
+        return _ndimage_laplace(signal, mode="reflect")
+    return np.stack([_ndimage_laplace(signal[c], mode="reflect")
+                     for c in range(signal.shape[0])])
 
 
 PERTURBATION_METHODS = {
@@ -134,12 +151,19 @@ def perturb_regions(
     the ones already hidden. This is what the deletion-curve layer (layer 3)
     needs to build cumulative MoRF/LeRF curves correctly.
 
+    Multi-channel: a region is a TIME segment, hidden across ALL channels at once
+    (the "across-channel" design). The grid is purely temporal; the time axis is
+    the LAST axis of `signal`, so a single-channel `(T,)` signal and a multi-channel
+    `(C, T)` signal are handled by the same last-axis indexing. For `(T,)` the
+    behaviour is identical to before.
+
     Parameters
     ----------
-    signal : ndarray, shape (length,)
-        A single signal. `length` is read from the signal/grid — not hard-coded.
+    signal : ndarray, shape (T,) or (C, T)
+        A single signal; the time axis (length T) is the last axis. Dimensions are
+        read from the signal — nothing about channel count is assumed.
     grid : RegionGrid
-        The region grid; `grid.length` must equal `len(signal)`.
+        The region grid over time; `grid.length` must equal the time axis length.
     region_ids : iterable of int
         Indices of the regions to perturb, each in [0, grid.n_regions).
     method : str
@@ -149,18 +173,18 @@ def perturb_regions(
 
     Returns
     -------
-    ndarray, shape (length,)
-        A copy of `signal` with every listed region replaced by the PM's
-        background (computed from the original signal).
+    ndarray, same shape as `signal`
+        A copy of `signal` with every listed region (across all channels) replaced
+        by the PM's background (computed from the original signal).
     """
     signal = np.asarray(signal, dtype=float)
-    if signal.ndim != 1:
+    if signal.ndim not in (1, 2):
         raise ValueError(
-            f"perturb_regions operates on a single 1-D signal; got shape {signal.shape}"
+            f"perturb_regions expects a (T,) or (C, T) signal; got shape {signal.shape}"
         )
-    if signal.shape[0] != grid.length:
+    if signal.shape[-1] != grid.length:
         raise ValueError(
-            f"signal length {signal.shape[0]} != grid.length {grid.length}"
+            f"signal time length {signal.shape[-1]} != grid.length {grid.length}"
         )
     if method not in PERTURBATION_METHODS:
         raise ValueError(
@@ -176,7 +200,9 @@ def perturb_regions(
                 f"region_id {region_id} out of range [0, {grid.n_regions})"
             )
         start, stop = grid.bounds[region_id]
-        perturbed[start:stop] = background[start:stop]
+        # `...` spans the channel axis when present: hide the time-region in all
+        # channels; for a 1-D signal this is just perturbed[start:stop].
+        perturbed[..., start:stop] = background[..., start:stop]
     return perturbed
 
 
