@@ -841,3 +841,130 @@ and has the healthiest minority counts among the k=6 options. A validation set f
 stopping needs signal stability on the minority classes (absolute counts) more than
 proportional fidelity to population rates — the untouched test set carries the honest class
 distribution. Seed 42 remains in use everywhere else; only the validation split uses seed 8.
+
+## Decision: configurable early-stopping metric in harness train_cnn (12 Aug 2026)
+
+`harness/models/cnn.py::train_cnn` gains three additive keyword arguments — `monitor`
+({"val_loss", "val_balanced_accuracy"}), `mode` ({"min", "max"}) and `min_delta` — plus
+restore-best-weights by the *monitored* metric and two new return keys, `stopped_epoch` and
+`stop_reason` ({"patience", "max_epochs"}), so a caller can report where and why training
+stopped. Both validation quantities were already computed every epoch, so monitoring balanced
+accuracy needed no new machinery. The change is purely additive: the defaults
+(`monitor="val_loss"`, `mode="min"`, `min_delta=1e-6`) reproduce the previous
+`val_loss < best_val_loss - 1e-6` logic exactly, so ECG200 (Models 2–5) is untouched. The
+optimizer, scheduler, batching, class-weighting and every existing default are unchanged.
+
+Sanity check (light, not a full regression gate): re-running the existing ECG200 path with no
+new arguments reproduces the committed `multiseed_ladder.json` metrics **exactly** for
+shallow and deep across seeds 0–2 (balanced accuracy, F1, ROC-AUC to <1e-9; test accuracy
+exact) — identical restored weights, hence identical stopping behaviour. Invalid `monitor`/
+`mode` raise.
+
+## Decision: ladder-wide early-stopping protocol — monitor validation BALANCED ACCURACY (12 Aug 2026)
+
+Every neural rung (Models 2–5) early-stops on **validation balanced accuracy, not validation
+loss**. Reason: the validation loss is dominated by the majority stages — W and N2 are ~69%
+of the data — so a model can lower its loss while N1/N3 recall degrades, and loss-monitored
+early stopping would select exactly the checkpoint that is worst on the minority stages this
+thesis most needs to keep measurable. Balanced accuracy (mean per-class recall) weights all
+five stages equally, so the restored checkpoint is the one that best serves the minority
+classes. (Model 1, the band-power logistic baseline, had no early stopping — it has no
+epochs — so this protocol begins at Model 2.)
+
+Protocol settings, FIXED across Models 2–5 (passed from each notebook, not defaulted in the
+harness, so the harness stays dataset-agnostic):
+
+    monitor = "val_balanced_accuracy"   mode = "max"   patience = 10
+    min_delta = 0.002                   max_epochs = 100
+
+  - `min_delta = 0.002` (0.2 pp of balanced accuracy). The fixed val set has N3 = 164, so a
+    single N3 recall flip moves balanced accuracy by ~1/164/5 ≈ 0.12 pp; a 0.2 pp threshold
+    clears single-epoch minority-class noise without stalling on genuine gains.
+  - `max_epochs = 100` is a generous ceiling, not the expected stop: with patience 10 on
+    balanced accuracy over 17,742 training epochs, models should halt by patience well before
+    100. Per-epoch cost on local CPU is unknown until seed 0 is timed, so this may be revised
+    after seeing that timing. Each seed records `stopped_epoch` and `stop_reason`; if runs
+    routinely hit the ceiling they are being truncated while still improving, and that will be
+    visible per seed rather than hidden.
+
+The stopping protocol is held identical across the ladder deliberately: models stopping at
+different epoch counts is the models differing, not the protocol differing, so early stopping
+is not a confound in the complexity→faithfulness comparison.
+
+## Decision: Model 2 — shallow 1D CNN, second ladder rung (12 Aug 2026)
+
+Training notebook `sleep_edf/notebooks/model2/06_model2_shallow_cnn.ipynb` (training only; the
+XAI/CMI notebook is a later task, after all CNNs are trained). Mirrors Model 1's training
+notebook section-for-section, minus the coefficient/known-answer sanity check (no CNN
+analogue — faithfulness questions belong in the XAI notebook).
+
+  - Variant: `build_cnn("shallow")` from `harness/models/cnn.py` — `CNN_VARIANTS["shallow"] =
+    [16, 32]`. No architecture code is copied into sleep_edf/.
+  - Kernel size: **15**, sourced from `sleep_edf/config.py::CNN_KERNEL_SIZE` (150 ms at 100 Hz,
+    matched to Sleep-EDF's ~15-sample autocorrelation), passed to build_cnn — NOT the harness
+    default of 7. The notebook hard-asserts the config kernel reached conv1 and refuses to
+    train otherwise.
+  - Parameters: **8,181 total = 8,016 conv trunk + 165 head** (5-class GAP head).
+  - Receptive field: **46 samples = 460 ms** at 100 Hz (the minimal-event end of the ladder's
+    mechanistic reading; see the receptive-field-progression entry).
+  - Seeds: **5** (fixed up front, no single-seed preview), via the shared multi-seed driver
+    `sleep_edf.training.run_all_seeds`.
+  - Training data: **17,742 epochs** = the fixed 20,000-epoch subsample minus the 6 held-out
+    validation subjects; validation = the fixed 2,258-epoch subject-level split; test = the
+    full 40,145. No resampling or rebalancing.
+  - Stopping rule: the ladder-wide protocol (monitor val balanced accuracy, mode max,
+    patience 10, min_delta 0.002, max_epochs 100) — see that entry; not duplicated here. The
+    notebook passes it to train_cnn and surfaces per-seed `stopped_epoch` / `stop_reason`.
+
+Decisions made that were not specified:
+  - **Majority-class floor is N2, not W.** In the test set N2 (14,679) outnumbers W (12,967),
+    so the majority-class baseline is "always predict N2" = 0.3656, not the ~34% W figure
+    assumed in the task. The notebook computes the floor dynamically and labels the class, so
+    it reports the true reference rather than a hard-coded one.
+  - **Per-seed checkpoints saved** to `sleep_edf/results/checkpoints/model2_shallow_cnn_seed{
+    seed}.pt`. A CNN cannot be reconstructed from summary numbers the way the logistic model
+    could, so the later XAI notebook loads these instead of retraining.
+  - **Batched test inference** (`_predict_in_batches`, 512/chunk) in the notebook: the harness
+    `torch_predict_proba` runs the whole array in one forward (fine for ECG200's ~100 samples)
+    but would build a huge intermediate activation on the 40,145-epoch test set. Chunking is a
+    notebook-side wrapper — it does not touch the harness and is not a training loop.
+  - **No inner epoch progress bar.** `train_cnn` exposes no per-epoch callback, so the driver's
+    optional inner bar isn't driven (outer per-seed bar + seed-0 time estimate still show). Not
+    adding a hook — no harness changes in this task.
+
+## Decision: MPS (Apple-Silicon GPU) as the ladder-wide training device for Models 2–5 (12 Aug 2026)
+
+Neural training (Models 2–5) runs on **MPS** where available, falling back to CPU on non-Apple
+machines. On this hardware MPS is ~100× faster than CPU for the shallow CNN, turning an
+infeasible local-CPU run into a practical one (the full 5-seed Model 2 run drops from ~14 h to
+a few minutes).
+
+No harness change was needed: `train_cnn` and `torch_predict_proba` already accept a `device`
+argument (default `"cpu"`, so ECG200 is untouched), and `train_cnn` already places model, data
+and loss on-device and returns predictions to CPU before the sklearn/`classification_metrics`
+step. The device is passed from each model notebook (`DEVICE = "mps" if
+torch.backends.mps.is_available() else "cpu"`), not defaulted in the harness, keeping the
+harness dataset- and hardware-agnostic. `run_all_seeds` is device-agnostic (the per-seed
+function chooses the device).
+
+Speedup, and how it was verified. Per-batch timing with `.item()` forcing completion each step
+(so it measures real compute, not async queueing): **~235 ms/batch on CPU vs ~2 ms/batch on
+MPS (~117×)**; both backends reach comparable loss (1.43 vs 1.42), i.e. MPS is genuinely
+training, not no-op'ing. A 2,048-sample / 4-epoch A/B on the actual Sleep-EDF data reproduced
+this (subset overhead makes the wall-clock ratio ~32× there, per-batch steady-state ~100×).
+
+Determinism. `set_seed` (`torch.manual_seed`) covers MPS, and the model has no dropout, so the
+only RNG — weight initialisation and DataLoader shuffling — runs CPU-side and is seeded.
+Verified empirically: **two MPS runs of the same seed produced bit-identical loss curves**
+(max|Δ| = 0.0). So MPS is reproducible for a given seed, and the 5-seed spread reflects genuine
+seed variance, not backend noise — error bars are trustworthy.
+
+Numerics across backends. float32 differs slightly between CPU and MPS: a same-seed CPU-vs-MPS
+A/B tracked the same loss trajectory with max|Δ train_loss| ≈ 0.0002 (float32 rounding), so
+they are clearly the same training but **not bit-comparable**. Consequence: results are
+compared within-backend; a number produced on MPS is not expected to reproduce a CPU number to
+full precision.
+
+Model 1 note. The band-power logistic baseline (Model 1) was trained on CPU (sklearn, 30
+parameters) — unaffected in any way that matters, but recorded here so the backend difference
+across the ladder is on the record: Model 1 = CPU/sklearn, Models 2–5 = MPS/torch.

@@ -158,20 +158,44 @@ def train_cnn(
     weight_decay: float = WEIGHT_DECAY,
     seed: int = SEED,
     device: str = "cpu",
+    monitor: str = "val_loss",
+    min_delta: float = 1e-6,
+    mode: str = "min",
 ) -> dict:
     """Shared training recipe (reused verbatim by Models 3–5).
 
     Adam + class-weighted cross-entropy (handles the ~65/35 imbalance), early
-    stopping on validation loss with best-checkpoint restore, fixed seed.
+    stopping on a monitored validation metric with best-checkpoint restore, fixed seed.
+
+    Early-stopping metric (additive; defaults reproduce the original behaviour exactly)
+        monitor : {"val_loss", "val_balanced_accuracy"} — the validation quantity watched
+            for improvement and used to pick the restored checkpoint. Default "val_loss".
+        mode : {"min", "max"} — whether lower (loss) or higher (balanced accuracy) is
+            better. Default "min".
+        min_delta : float — an epoch counts as an improvement only if it beats the best
+            so far by MORE than this margin, so noise doesn't keep resetting patience.
+            Default 1e-6 (the original hard-coded loss threshold). With the defaults
+            (monitor="val_loss", mode="min", min_delta=1e-6) the stop/restore logic is
+            identical to the previous version.
+    Both validation quantities are already computed every epoch, so no extra work is
+    needed to monitor balanced accuracy.
 
     Returns
     -------
     dict with keys:
-        "history"    : {"train_loss", "val_loss", "val_balanced_accuracy"} lists
-        "best_epoch" : int (1-indexed) of the restored checkpoint
-        "n_classes"  : int
-    The model is left with the best-validation weights loaded in place.
+        "history"       : {"train_loss", "val_loss", "val_balanced_accuracy"} lists
+        "best_epoch"    : int (1-indexed) of the restored checkpoint (best monitored value)
+        "n_classes"     : int
+        "monitor"       : str — the metric watched
+        "best_metric"   : float — the best monitored value achieved
+        "stopped_epoch" : int — the last epoch actually run
+        "stop_reason"   : {"patience", "max_epochs"} — why training ended
+    The model is left with the best-monitored-metric weights loaded in place.
     """
+    if monitor not in ("val_loss", "val_balanced_accuracy"):
+        raise ValueError(f"monitor must be 'val_loss' or 'val_balanced_accuracy'; got {monitor!r}")
+    if mode not in ("min", "max"):
+        raise ValueError(f"mode must be 'min' or 'max'; got {mode!r}")
     set_seed(seed)
     model.to(device)
     n_classes = int(len(np.unique(y_train)))
@@ -189,7 +213,13 @@ def train_cnn(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     history = {"train_loss": [], "val_loss": [], "val_balanced_accuracy": []}
-    best_val_loss, best_state, best_epoch, since_improved = float("inf"), None, 0, 0
+    # Generic monitored-metric early stopping. Defaults (monitor="val_loss", mode="min",
+    # min_delta=1e-6) reproduce the previous `val_loss < best_val_loss - 1e-6` behaviour.
+    def _improved(current, best):
+        return current < best - min_delta if mode == "min" else current > best + min_delta
+    best_metric = float("inf") if mode == "min" else float("-inf")
+    best_state, best_epoch, since_improved = None, 0, 0
+    stopped_epoch, stop_reason = max_epochs, "max_epochs"
 
     for epoch in range(1, max_epochs + 1):
         model.train()
@@ -214,14 +244,18 @@ def train_cnn(
         history["val_loss"].append(val_loss)
         history["val_balanced_accuracy"].append(val_bal)
 
-        if val_loss < best_val_loss - 1e-6:
-            best_val_loss, best_epoch, since_improved = val_loss, epoch, 0
+        current = val_loss if monitor == "val_loss" else val_bal
+        if _improved(current, best_metric):
+            best_metric, best_epoch, since_improved = current, epoch, 0
             best_state = copy.deepcopy(model.state_dict())
         else:
             since_improved += 1
             if since_improved >= patience:
+                stopped_epoch, stop_reason = epoch, "patience"
                 break
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    return {"history": history, "best_epoch": best_epoch, "n_classes": n_classes}
+    return {"history": history, "best_epoch": best_epoch, "n_classes": n_classes,
+            "monitor": monitor, "best_metric": float(best_metric),
+            "stopped_epoch": int(stopped_epoch), "stop_reason": stop_reason}
