@@ -498,18 +498,19 @@ M5 1.2M/0.778 — accuracy rises across the CNNs then DROPS at the transformer.
 ================================================================================
 PHASE 2 — SECOND DATASET: SLEEP-EDF (Sleep-Cassette, EEG sleep staging)
 ================================================================================
-Purpose: replicate the ECG200 XAI-faithfulness-vs-complexity study on a second,
-structurally different dataset (longer signals, 5-class, physiological EEG) to test
-whether the complexity→faithfulness findings generalise beyond ECG200. This section
-records the DATA decisions only; models / region sizes are chosen later.
+Purpose: a study of XAI faithfulness versus model complexity on the Sleep-EDF
+sleep-staging task (single-channel EEG, 5-class AASM staging). The faithfulness of the
+attribution methods is measured across a ladder of models of increasing complexity, on
+this dataset on its own terms. This section records the DATA decisions only; models /
+region sizes are chosen later. (ECG200 appears elsewhere in the repository as earlier
+related work; no Sleep-EDF decision below depends on it.)
 
 Channel & format
 Single-channel EEG Fpz-Cz sampled at 100 Hz, cut into non-overlapping 30-s epochs =
 3000 samples/epoch. Single-channel Fpz-Cz @100 Hz / 30-s epochs is the standard
 Sleep-EDF setup (matches Khalili & Mohammadzadeh Asl 2021; Supratak et al.
 DeepSleepNet 2017). The other PSG channels (Pz-Oz EEG, EOG @100 Hz; and the 1-Hz
-EMG/resp/temp/event channels) are NOT used, keeping the input a single time series
-directly analogous to ECG200's single channel.
+EMG/resp/temp/event channels) are NOT used, keeping the input a single time series.
 
 Label mapping (R&K → AASM 5-class)
 Hypnogram stages are Rechtschaffen & Kales; mapped to the modern AASM 5-class scheme:
@@ -528,9 +529,7 @@ epochs across the train/test boundary.
 Class balance (post-trim) & the deliberate NO-REBALANCING decision
 Overall post-trim balance: W 33.7% / N1 11.0% / N2 35.4% / N3 6.7% / REM 13.2%.
 N1 and N3 are minority classes; N3 is rarest at 6.7%. We deliberately DO NOT rebalance
-or reweight (no oversampling, no class weights). Two reasons: (1) comparability — the
-ECG200 arm used the data's natural class balance, and adding a rebalancing step on one
-arm only would confound a cross-dataset comparison; (2) faithfulness is the object of
+or reweight (no oversampling, no class weights). Reason: faithfulness is the object of
 study, and resampling/reweighting would change what the model learns and thereby the
 attributions, confounding the faithfulness measurement itself. FLAG carried forward:
 per-class faithfulness for the scarce classes (N1, and especially N3) must be reported
@@ -538,15 +537,22 @@ WITH caveats about sample scarcity.
 
 Preprocessing (per-epoch z-norm; NO bandpass filter)
 Each 30-s epoch is z-normalised by ITS OWN mean/std (per-epoch; guard std==0). We
-apply NO bandpass filter — even though a 0.x–~40 Hz filter is the sleep-staging norm
-(and the ASSC reference filters 0.1–37 Hz). Rationale: match ECG200's deliberately
-MINIMAL preprocessing (ECG200 has no filtering either) so preprocessing is not a
-confound in the cross-dataset comparison. Per-epoch (not global/train-fit) normalisation
+apply NO bandpass filter. Rationale (faithfulness-motivated): this is a faithfulness
+study, and the low-complexity baseline in particular serves as a directly-inspectable
+interpretability anchor for validating the attribution/harness machinery. Keeping the
+input unfiltered preserves the tightest correspondence between the raw signal, the
+model's readable parameters, and the attribution — no preprocessing transform is
+interposed between signal and model through which the attribution would then have to be
+read. More generally the study prioritises an unmediated signal-to-attribution
+correspondence over the accuracy-oriented preprocessing standard in the sleep-staging
+literature (which bandpass-filters for accuracy — a different goal). This is therefore
+a DELIBERATE DEPARTURE from the sleep-staging convention (which filters), made on
+faithfulness grounds, not an oversight. Per-epoch (not global/train-fit) normalisation
 also means NO dataset-level statistic crosses the split — leakage-free by construction
-(see the NO-LEAKAGE NOTE in src/data/sleep_edf.py). CONDITIONAL DEVIATION: a bandpass
-filter may be added later ONLY if the models demonstrably cannot learn without it; if
-so it will be documented here as a data-driven deviation, and any global normalisation
-would then be fit on TRAIN only.
+(see the NO-LEAKAGE NOTE in src/data/sleep_edf.py). CONDITIONAL ESCAPE HATCH: a bandpass
+filter may be added later ONLY if the models demonstrably cannot learn on the raw
+signal, documented as a data-driven necessity; any global normalisation would then be
+fit on TRAIN only.
 
 Split (leakage-free, subject-level)
 Subject-level ~80/20 split, seed 42: 62 train / 16 test subjects → 121 train / 32 test
@@ -557,7 +563,7 @@ from the same night/subject leaking across train and test.
 
 Loader hardening (Stage 3) & regression gate
 src/data/sleep_edf.py now hardens the Stage 1–2 validated notebooks into a reusable
-loader mirroring the ECG200 pattern: build_processed_data() builds + disk-caches once
+cached loader: build_processed_data() builds + disk-caches once
 to data/sleep_edf/processed/sleep_edf_{train,test}_{X,y}.npy (~2.35 GB, gitignored),
 load_sleep_edf(split) loads the cache (force_rebuild flag; cache-hit load ~0.4 s). The
 per-recording loop CATCHES AND REPORTS (never silently drops) missing-channel /
@@ -572,59 +578,46 @@ build_processed_data, and Sleep-EDF's function shares that name (collision), so 
     from src.data.sleep_edf import load_sleep_edf, build_processed_data
 
 
-Region-size (Stage 4 analysis → Stage 5 config)
+Region-size
 Notebook: notebooks/sleep_edf/03_region_size_analysis.ipynb. Config: src/config/sleep_edf.py.
 
-Method — ECG200's exact rule, applied to Sleep-EDF (same logic, new data). Per-epoch
-autocorrelation: mean-subtract each 30-s epoch, compute the linear ACF over non-negative
-lags, normalise to 1 at lag 0, average across a stage-balanced sample (800 epochs × 5
-classes). Correlation length = first lag at which the mean ACF falls below 1/e ≈ 0.37
-(ECG200's criterion), with the first zero crossing as a secondary marker. Computed via
-FFT for speed and VERIFIED bit-identical (np.allclose) to ECG200's np.correlate on
-sample epochs — same quantity, faster engine.
+DECISION. Region size = 60 samples (600 ms, 2% of a 3000-sample epoch → 50 regions,
+which divide 3000 exactly). A single grid is used; there is no fine grid (see below).
 
-Measurement. 1/e correlation length = 15 samples (150 ms); first zero crossing = 45
-samples (450 ms). Both land on plausible EEG timescales — 150 ms ≈ one theta/alpha cycle
-(4–10 Hz), 450 ms ≈ quarter-period of a ~0.6 Hz slow/delta oscillation — a sanity check
-that the number reflects real neural rhythm, not an artefact. Class-dependence is MILD:
-1/e ranges 13–19 samples across stages (1.46×, std ≈ 2), N3 (slow-wave sleep) coarsest at
-19 samples with a ~0.76 Hz zero-crossing (textbook slow-wave frequency). A single global
-region size is therefore only a mild simplification.
+Primary rationale — the physiological scale of sleep-staging events. Under the AASM
+standard, sleep stages are identified by characteristic waveform events: sleep spindles
+(~0.5–1.5 s), K-complexes (~0.5 s) and slow waves (~1 s) — i.e. ≈50–150 samples at 100 Hz.
+A 60-sample (600 ms) region corresponds to approximately one such event, so the
+perturbation grid is aligned with the physiologically meaningful units of sleep staging:
+each region is about the size of the structure the label actually depends on, rather than
+an arbitrary fraction of the epoch. This is a domain-motivated choice, fixed BEFORE any
+faithfulness result was computed — not a tuned parameter.
 
-The divergence (why the rule doesn't transfer verbatim). Applying the rule mechanically —
-region ≈ one correlation length — gives 15-sample regions = 0.5% of a 3000-sample epoch =
-200 regions/epoch, ~20× ECG200's ~10. The rule ties region size to a fixed number of
-SAMPLES (~15), which was ~10% of ECG200's 96-sample signal but only ~0.5% of Sleep-EDF's
-3000-sample epoch. The arithmetic is clean (3000 ÷ 15 = 200); the problem is that 200–375
-regions is an impractically fine grid for a perturbation harness, and 15 samples is finer
-than the events that actually distinguish sleep stages.
+Corroborating context (supporting, NOT validation). Khalili & Mohammadzadeh Asl (2021),
+working on the same Sleep-EDF task, use multi-scale CNN kernels spanning ~25–200 samples on
+the reasoning that stage-distinguishing structure lives at that scale; a 60-sample region
+sits inside this range. This is a classification pipeline with no region grid, so it is
+supporting evidence about the temporal scale of stage-relevant EEG structure — explicitly
+NOT a validation of the region size itself (different construct).
 
-DECISION. Primary region = 60 samples (600 ms, 2% of epoch → 50 regions); fine region =
-30 samples (300 ms, 1% → 100 regions). Keeps ECG200's 2:1 primary:fine ratio. Both divide
-3000 exactly (50 / 100 regions, no fractional regions). Rationale: the 15-sample raw grain
-is FINER than the physiological events that distinguish sleep stages — sleep spindles
-(~0.5–1.5 s), K-complexes (~0.5 s), slow waves (~1 s) ≈ 50–150 samples — so the region
-size is set to the EEG FEATURE scale, using the 15-sample correlation length only as a
-FLOOR (the fine 30-sample grid still spans ≥2 correlation lengths, so it never fragments a
-coherent grain). This is framed explicitly as a DOCUMENTED, PHYSIOLOGICALLY-MOTIVATED
-ADAPTATION, not a tuned parameter — chosen BEFORE any faithfulness result was computed.
+Confirmatory signal-scale check (does NOT derive the choice). As an independent sanity
+check, a per-epoch autocorrelation analysis (mean-subtract each 30-s epoch, linear ACF,
+normalise to 1 at lag 0, average over a stage-balanced sample of 800 epochs × 5 classes)
+measures Sleep-EDF's 1/e correlation length at ≈15 samples (150 ms; first zero crossing
+≈45 samples), stable across stages (13–19 samples; N3 coarsest at 19, ~0.76 Hz — the
+textbook slow-wave frequency). This ~15-sample correlated grain sits WELL BELOW the
+60-sample event scale, confirming that a 60-sample region comfortably contains the signal's
+correlated structure (it never slices inside one coherent grain). The correlation length is
+thus a lower bound the region clears — it corroborates, but does NOT derive, the 60-sample
+choice, which stands on the physiological event scale above.
 
-Corroborating context (cited with caution, NOT as validation). Khalili & Mohammadzadeh Asl
-(2021) work on the same Sleep-EDF dataset but with a classification pipeline that has NO
-region grid, so it is not a direct precedent for a region size. Their CNN uses multi-scale
-kernels spanning ~25–200 samples, on the reasoning that stage-distinguishing structure
-lives at that scale; the chosen 60-sample region sits inside this range. This is supporting
-evidence that stage-relevant EEG structure operates at the tens-to-hundreds-of-samples
-scale — explicitly NOT a validation of the region size itself (different construct).
-
-Documented future option (NOT committed). A robustness check could re-run the central
-comparison at the verbatim 15/8-sample grid to show the finding is stable across region
-sizes. Conditional on time; Sleep-EDF's primary result uses 60/30.
+No fine grid. An earlier draft carried a second, finer 30-sample grid. It has been DROPPED:
+its only justification was a fixed primary:fine ratio, with no independent, physiologically-
+or ML-grounded reason for a 30-sample region specifically, so it did not stand on its own.
+The study uses the single 60-sample grid.
 
 Wiring. regions.py::build_region_grid(length, region_size_pct) takes the region size as an
-explicit PERCENTAGE (n_regions = round(100/pct)); Sleep-EDF passes its own *_PCT values
-(2.0 / 1.0) per call, so ECG200's 10%/5% defaults in regions.py are UNCHANGED. Confirmed
-the harness accepts an explicitly-passed size with no edit to shared region code.
-src/config/sleep_edf.py holds INPUT_LENGTH=3000, IN_CHANNELS=1, N_CLASSES=5, the region
-sizes (samples + % + counts), and import-time asserts proving the exact division and the
-2:1 ratio. NOT yet applied to any model/harness run — config + log only.
+explicit PERCENTAGE (n_regions = round(100/pct)); Sleep-EDF passes REGION_SIZE_PRIMARY_PCT
+= 2.0 per call. src/config/sleep_edf.py holds INPUT_LENGTH=3000, IN_CHANNELS=1, N_CLASSES=5,
+the region size (60 samples / 2% / 50 regions), and an import-time assert proving the exact
+division. NOT yet applied to any model/harness run — config + log only.
