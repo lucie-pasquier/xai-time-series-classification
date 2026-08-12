@@ -1,0 +1,39 @@
+{
+  "val_subjects": [
+    2,
+    16,
+    37,
+    48,
+    60,
+    70
+  ],
+  "n_val_subjects": 6,
+  "heldout_fraction": 0.1,
+  "split_seed": 8,
+  "applies_to": {
+    "subsample": 20000,
+    "subsample_seed": 42
+  },
+  "counts_on_20k": {
+    "train": {
+      "n": 17742,
+      "per_class": [
+        5931,
+        1954,
+        6307,
+        1165,
+        2385
+      ]
+    },
+    "val": {
+      "n": 2258,
+      "per_class": [
+        891,
+        231,
+        704,
+        164,
+        268
+      ]
+    }
+  }
+}

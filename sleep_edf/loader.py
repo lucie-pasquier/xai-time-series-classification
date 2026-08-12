@@ -153,6 +153,19 @@ def _cache_paths(split):
             PROCESSED_DIR / f"sleep_edf_{split}_y.npy")
 
 
+def _subj_path(split):
+    """Per-epoch subject-id cache (added alongside X/y; see load_sleep_edf(return_subjects=))."""
+    return PROCESSED_DIR / f"sleep_edf_{split}_subj.npy"
+
+
+def _subject_code(recording_id: str) -> int:
+    """Subject number from a recording id: chars [3:5] (e.g. 'SC4001E0' -> 0).
+
+    Same field _subject_split() groups on, so a subject's two nights share one code.
+    """
+    return int(recording_id[3:5])
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def build_processed_data(force_rebuild: bool = False, verbose: bool = True) -> dict:
@@ -166,7 +179,9 @@ def build_processed_data(force_rebuild: bool = False, verbose: bool = True) -> d
     a summary without rebuilding. Returns a summary dict (issues + counts).
     """
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and all(p.exists() for s in ("train", "test") for p in _cache_paths(s)):
+    if not force_rebuild and all(
+        p.exists() for s in ("train", "test") for p in (*_cache_paths(s), _subj_path(s))
+    ):
         return {"status": "cache_exists"}
 
     psg_paths = sorted(RAW_DIR.glob("*PSG.edf"))
@@ -196,10 +211,17 @@ def build_processed_data(force_rebuild: bool = False, verbose: bool = True) -> d
     for split, recs in (("train", train_recs), ("test", test_recs)):
         X = np.concatenate([clean[r][0] for r in recs]).astype(np.float32)
         y = np.concatenate([clean[r][1] for r in recs]).astype(np.int64)
+        # Per-epoch subject id, aligned to X/y in the SAME recording order (so a subject's
+        # epochs stay contiguous). Additive: does not affect the existing X/y arrays.
+        subj = np.concatenate(
+            [np.full(len(clean[r][1]), _subject_code(r), dtype=np.int16) for r in recs]
+        )
         Xp, yp = _cache_paths(split)
         np.save(Xp, X)
         np.save(yp, y)
+        np.save(_subj_path(split), subj)
         summary["epochs"][split] = int(len(y))
+        summary.setdefault("subjects_per_split", {})[split] = int(len(np.unique(subj)))
         summary[f"class_counts_{split}"] = {int(c): int((y == c).sum()) for c in range(N_CLASSES)}
         if verbose:
             print(f"[sleep_edf] saved {split}: X{X.shape} y{y.shape} -> {Xp.name}, {yp.name}")
@@ -233,7 +255,7 @@ def subsample_indices(y, target: int = SUBSAMPLE_TARGET, seed: int = SUBSAMPLE_S
 
 def load_sleep_edf(split: str = "train", subsample: int | None = SUBSAMPLE_TARGET,
                    seed: int = SUBSAMPLE_SEED, force_rebuild: bool = False,
-                   verbose: bool = True):
+                   verbose: bool = True, return_subjects: bool = False):
     """Load cached Sleep-EDF arrays for a split, building the cache on first use.
 
     Parameters
@@ -253,11 +275,18 @@ def load_sleep_edf(split: str = "train", subsample: int | None = SUBSAMPLE_TARGE
     verbose : bool, default True
         Print a one-line record of what a training load returned (subsample vs full), so
         any training run visibly logs the data it trained on.
+    return_subjects : bool, default False
+        If True, also return a per-epoch subject-id array (int subject number, same field
+        the leakage-free subject-level train/test split groups on). Subsampled with the
+        SAME indices as X/y, so it stays aligned. Default False keeps the historical
+        ``(X, y)`` return signature unchanged for every existing caller. Used to build the
+        subject-level early-stopping validation split (see sleep_edf/validation.py).
 
     Returns
     -------
     X : ndarray (n_epochs, 3000) float32   — per-epoch z-normalised EEG Fpz-Cz
     y : ndarray (n_epochs,) int in {0,1,2,3,4}  — AASM stages W,N1,N2,N3,REM
+    subj : ndarray (n_epochs,) int16       — ONLY if return_subjects=True; per-epoch subject id
 
     Notes
     -----
@@ -267,21 +296,28 @@ def load_sleep_edf(split: str = "train", subsample: int | None = SUBSAMPLE_TARGE
     if split not in ("train", "test"):
         raise ValueError(f"split must be 'train' or 'test'; got {split!r}")
     Xp, yp = _cache_paths(split)
-    if force_rebuild or not (Xp.exists() and yp.exists()):
+    sp = _subj_path(split)
+    # Rebuild if X/y missing, or if subjects are requested but not yet cached (first load
+    # after the subject-id addition regenerates the deterministic cache — X/y come back
+    # bit-identical since the pipeline is deterministic).
+    if force_rebuild or not (Xp.exists() and yp.exists()) or (return_subjects and not sp.exists()):
         build_processed_data(force_rebuild=force_rebuild)
     X, y = np.load(Xp), np.load(yp)
+    subj = np.load(sp) if return_subjects else None
 
     # Test is ALWAYS whole — never subsampled, regardless of `subsample`.
     if split == "test":
-        return X, y
+        return (X, y, subj) if return_subjects else (X, y)
 
     # Training: subsample by default; explicit opt-out (None / 0) returns the full set.
     if subsample:
         idx = subsample_indices(y, target=subsample, seed=seed)
         X, y = X[idx], y[idx]
+        if subj is not None:
+            subj = subj[idx]
         if verbose:
             print(f"[sleep_edf] training load: {len(y):,}-epoch stratified subsample "
                   f"(seed {seed})")
     elif verbose:
         print(f"[sleep_edf] training load: full training set ({len(y):,} epochs)")
-    return X, y
+    return (X, y, subj) if return_subjects else (X, y)

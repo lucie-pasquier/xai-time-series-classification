@@ -55,6 +55,25 @@ REGION_SIZES_PCT: dict[str, float] = {
     "primary": REGION_SIZE_PRIMARY_PCT,   # 2%  → 50 regions of 60 samples
 }
 
+# ── Architecture parameters for the shared harness/models (see DECISIONS_LOG) ──
+# These override the harness defaults (kernel 7 / patch 1), which were derived from
+# ECG200 and have no standing here. Both are already constructor arguments on
+# build_cnn()/build_transformer(); Sleep-EDF passes these values explicitly. Nothing
+# in harness/ hardcodes them — the defaults there stay 7 / 1.
+#
+#   CNN first-layer kernel : 15 samples = 150 ms at 100 Hz. Matches Sleep-EDF's own
+#       ~15-sample autocorrelation length, so each first-layer filter spans roughly
+#       one coherence unit of the EEG. Derived from the signal, not inherited.
+CNN_KERNEL_SIZE: int = 15
+#
+#   Transformer patch size : 60 samples = 600 ms = one token per 60-sample region.
+#       Gives 3000 / 60 = 50 tokens — exactly one token per RegionGrid region, so
+#       attention weights map onto the CMI region grid with no aggregation, and
+#       full O(N^2) attention stays tractable (50 tokens, not 3000). 600 ms is also
+#       the AASM stage-defining event scale used to set the region size.
+TRANSFORMER_PATCH_SIZE: int = 60
+TRANSFORMER_N_TOKENS: int = 50    # 3000 / 60 — one token per primary region
+
 # ── Arithmetic sanity check: the region size divides 3000 EXACTLY (no remainder) ─
 # 3000 ÷ 60 = 50 — every region is a whole, equal number of samples; no fractional
 # regions and no remainder to distribute.
@@ -62,3 +81,9 @@ assert INPUT_LENGTH % REGION_SIZE_PRIMARY == 0, "primary region size must divide
 assert INPUT_LENGTH // REGION_SIZE_PRIMARY == N_REGIONS_PRIMARY == 50
 # Percentage form agrees with the sample-count form (round(100/pct) == n_regions).
 assert round(100.0 / REGION_SIZE_PRIMARY_PCT) == N_REGIONS_PRIMARY
+# Architecture params: odd kernel (padding kernel_size//2 preserves length); patch
+# size divides the epoch exactly (no padding/truncation) and equals the region size.
+assert CNN_KERNEL_SIZE % 2 == 1, "CNN kernel must be odd so padding=kernel_size//2 preserves length"
+assert INPUT_LENGTH % TRANSFORMER_PATCH_SIZE == 0, "patch size must divide 3000 exactly (no padding)"
+assert INPUT_LENGTH // TRANSFORMER_PATCH_SIZE == TRANSFORMER_N_TOKENS == 50
+assert TRANSFORMER_PATCH_SIZE == REGION_SIZE_PRIMARY, "one token per primary region"

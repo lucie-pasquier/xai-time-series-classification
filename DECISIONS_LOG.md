@@ -718,3 +718,126 @@ power has N3 delta highest (0.48 vs ~0.31 elsewhere) with higher bands suppresse
 training, the learned class×band coefficients are read back and compared to this table
 directly — the readable-ground-truth property in action. Functional check expected: balanced
 accuracy meaningfully above 0.20 chance and N3 recall far above the raw model's ~0.03.
+
+## Decision: CNN first-layer kernel size = 15 for Sleep-EDF (12 Aug 2026)
+
+Sleep-EDF's single-channel EEG has a measured autocorrelation length of ~15 samples (the
+1/e correlation length; confirmed in the region-size analysis). A first-layer convolution of
+15 samples = 150 ms at 100 Hz therefore spans roughly one coherence unit of the signal: each
+filter sees one correlated segment of the waveform rather than a fraction of one or several
+run together. The kernel is set from the dataset's own coherence scale, so the model's
+smallest feature detector is matched to the smallest scale at which the EEG carries
+structure. Value lives in `sleep_edf/config.py` (`CNN_KERNEL_SIZE = 15`) and is passed
+explicitly to `build_cnn(..., kernel_size=15)`; the harness default (7) is unchanged and no
+Sleep-EDF value is hardcoded in `harness/`. Kernel is odd, so `padding = kernel_size // 2 = 7`
+preserves sequence length through every conv (only the per-block MaxPool(2) changes length).
+
+## Decision: Transformer patch size = 60 for Sleep-EDF (12 Aug 2026)
+
+Each token embeds a 60-sample (600 ms) patch, giving 3000 / 60 = 50 tokens per epoch. Two
+reasons, both grounded in Sleep-EDF:
+  (1) Grid alignment. The faithfulness harness attributes onto the 60-sample RegionGrid (50
+      regions). A 60-sample patch places exactly one token per region, so attention weights
+      map onto the CMI region grid with NO aggregation step — token-level and region-level
+      analyses are the same partition, no boundary misalignment.
+  (2) Event scale. 600 ms is the AASM stage-defining event scale (spindles/K-complexes/slow
+      waves ≈ 50–150 samples) that also set the region size, so each token corresponds to
+      approximately one physiologically meaningful unit.
+A practical consequence, not the justification: 50 tokens keeps full O(N²) self-attention
+tractable, whereas per-timestep tokens would mean attention over 3000 positions per epoch.
+3000 is divisible by 60 exactly, so there is no padding or truncation. Value lives in
+`sleep_edf/config.py` (`TRANSFORMER_PATCH_SIZE = 60`) and is passed to `build_transformer(...,
+patch_size=60)`; the harness default (1) is unchanged. Instantiated ladder point:
+1,204,741 params, 50 tokens, positional embedding (1, 50, 128) = 6,400 params.
+
+## Decision: receptive-field progression as the ladder's mechanistic reading (12 Aug 2026)
+
+With kernel 15, the CNN rungs have receptive fields of 46 / 106 / 226 samples =
+460 / 1060 / 2260 ms (shallow / medium / deep). Read against the AASM stage-defining event
+scale (~50–150 samples, 500–1500 ms): shallow (460 ms) resolves roughly a single minimal
+event; medium (1060 ms) spans a full event; deep (2260 ms) spans multiple events plus
+surrounding context. This gives the ladder a mechanistic reading — how much temporal context
+each rung can integrate — that sits alongside parameter count and helps interpret any
+CMI/faithfulness differences between rungs.
+
+## Decision: depth and width are confounded across rungs; parameter count is the declared axis (12 Aug 2026)
+
+The CNN rungs vary depth and channel width together (shallow [16,32] → medium [32,64,64] →
+deep [64,128,128,256]), so those two factors are deliberately confounded. Parameter count
+(~8.2K / ~93K / ~864K) is the DECLARED complexity axis of the thesis; receptive field
+(460/1060/2260 ms) is reported alongside as the mechanistic interpretation. Consequence for
+analysis: a CMI difference between rungs cannot be attributed to depth or to capacity
+separately — it is a difference along the joint complexity axis, and claims must be phrased
+that way rather than as "deeper" or "higher-capacity" in isolation.
+
+## Decision: GAP head — CNN attributions read as "present in region", not "when it mattered" (12 Aug 2026)
+
+The CNN head is Global Average Pooling over time followed by a single linear layer, so the
+model's decision depends on WHETHER a channel's pattern is present anywhere in the epoch, not
+on WHERE it occurs — GAP discards temporal position. Consequence for interpretation: a
+region-level attribution on these CNNs indicates that the pattern the model relies on was
+present in that region, not that its temporal position within the epoch carried the decision.
+Attribution and CMI results on the CNN rungs must be read in those terms (presence, not
+timing).
+
+## Decision: expose per-epoch subject IDs in the loader (12 Aug 2026)
+
+`sleep_edf/loader.py` now caches and can return a per-epoch subject-id array
+(`load_sleep_edf(..., return_subjects=True)` → `(X, y, subj)`), needed to build a
+subject-level validation split (next entry). The change is purely additive: the default
+return signature stays `(X, y)`, no existing default or behaviour changed. Regression gate
+(force-rebuild from the raw EDFs, compare to the pre-change cache): train/test `X` and `y`
+are **bit-identical** (SHA-256 match and `array_equal`), the subject-level train/test split
+is unchanged (62 train / 16 test subjects, zero subject overlap = leakage-free preserved),
+and the fixed 20,000-epoch subsample is identical (same selection-index hash, same class
+counts W=6822/N1=2185/N2=7011/N3=1329/REM=2653). Subject id = recording-name chars [3:5]
+(the same field the train/test split groups on, so a subject's two nights share a code).
+
+## Decision: subject-level early-stopping validation split, fixed across the ladder (12 Aug 2026)
+
+**A validation split now exists** — Model 1 (band-power logistic regression) had none, as it
+has no epochs and needs no early stopping. Every neural rung (Models 2–5) trains with the
+shared `train_cnn` recipe, which early-stops on a validation set, so one is now required.
+
+**It is subject-level, not a random epoch split.** Sleep-EDF has subject structure: epochs
+from one subject share electrode placement, skull geometry and noise floor. A random
+class-stratified split of *epochs* would place the same subject on both sides, letting the
+model partially memorise subject identity — the early-stopping signal would be optimistic and
+stopping would fire late. Crucially that effect grows with model capacity, so it would vary
+along the very axis (parameter count) this thesis measures, confounding the comparison. A
+random-epoch split is harmless only *without* subject structure (e.g. ECG200); that
+assumption does not transfer, so ECG200's convention was explicitly not inherited. Holding
+out whole subjects makes the early-stopping signal an honest generalisation-to-unseen-subject
+signal, consistent with the leakage-free subject-level train/test split. (The reported test
+metrics are unaffected regardless — the val set only governs when training stops.)
+
+**Held out: 6 whole subjects — [2, 16, 37, 48, 60, 70]** (≈10% of the 62 training subjects;
+both nights of a subject always on the same side). Fixed and frozen to
+`sleep_edf/data/processed/sleep_edf_val_subjects.json`; every model on the ladder LOADS this
+exact split via `sleep_edf/validation.py::train_val_split()` rather than regenerating it — a
+per-model val split would move the early-stopping target between rungs and inject variance
+along the measured axis, the same reason the 20K subsample is fixed. Resulting counts on the
+20K subsample: **train 17,742 / val 2,258**; per class (train | val) —
+W 5931|891, N1 1954|231, N2 6307|704, N3 1165|164, REM 2385|268. The test set is untouched
+(the separate leakage-free subject-level holdout of 16 different subjects).
+
+**Split seed = 8, not the project-wide 42.** Everything else in Sleep-EDF uses seed 42
+(train/test split, 20K subsample); the validation split alone uses seed 8. Seed 42 was
+REJECTED for this split because it held out subjects [1, 7, 61, 64, 73, 74], of which **three
+had zero N3 epochs** (N3 = 102 total, 4.2% of val vs 6.6% natural) — the early-stopping signal
+would have been effectively blind to N3, the rarest and hardest stage. The rejection
+criterion — *no empty-N3 validation subject and an adequate absolute N3 count* — was fixed
+BEFORE any candidate seed was examined, so this is selection for measurability of a known-hard
+class, not selection on results. Candidates compared (all ~10%, 6 subjects unless noted;
+N3/N1 = val counts):
+
+  - seed 42 (default): N3 102 (4.2%, **3/6 subjects zero N3**), N1 286 — REJECTED
+  - seed 8  (CHOSEN) : N3 164 (7.3%, 0 empty), N1 231
+  - seed 3           : N3 155 (6.2%, 0 empty), N1 200
+  - seed 23, k=7     : N3 165 (6.5%, 0 empty), N1 226 — closest to natural, but enlarges holdout to 11.3%
+
+Seed 8 was chosen: it keeps the holdout at 6 subjects (9.7%, closest to the specified ~10%)
+and has the healthiest minority counts among the k=6 options. A validation set for early
+stopping needs signal stability on the minority classes (absolute counts) more than
+proportional fidelity to population rates — the untouched test set carries the honest class
+distribution. Seed 42 remains in use everywhere else; only the validation split uses seed 8.
