@@ -69,6 +69,12 @@ WAKE_EDGE_EPOCHS = 30 * 2      # keep 30 min of Wake each side; ×2 = 2 epochs/m
 SEED = 42
 TEST_FRACTION = 0.20
 
+# Training subsample (validated in notebooks/sleep_edf/02_dataset_construction.ipynb,
+# Step D; this is the single source of truth). Default for TRAINING loads so every
+# model on the complexity ladder trains on the IDENTICAL subsample.
+SUBSAMPLE_SEED = 42
+SUBSAMPLE_TARGET = 20_000
+
 mne.set_log_level("CRITICAL")
 
 
@@ -200,23 +206,82 @@ def build_processed_data(force_rebuild: bool = False, verbose: bool = True) -> d
     return summary
 
 
-def load_sleep_edf(split: str = "train", force_rebuild: bool = False):
+def subsample_indices(y, target: int = SUBSAMPLE_TARGET, seed: int = SUBSAMPLE_SEED):
+    """Deterministic, class-STRATIFIED subsample of a label array -> sorted indices.
+
+    For each class we keep the SAME fraction (~target/len(y)) of that class's epochs,
+    chosen at random. One shared fraction preserves the natural class balance EXACTLY
+    (no rebalancing); drawing at random across the pooled epochs (which span all
+    subjects) makes every subject contribute a proportional, randomly-placed slice.
+    Deterministic given (y, seed) — the identical subsample regenerates every call, so
+    every model on the complexity ladder trains on the same epochs.
+
+    Validated in notebooks/sleep_edf/02_dataset_construction.ipynb (Step D): on the full
+    155,334-epoch training set with target=20000, seed=42 this yields exactly 20,000
+    epochs, natural balance preserved, N3 = 1,329, all 62 subjects kept. This is the
+    single source of truth — the notebook imports it from here.
+    """
+    rng = np.random.RandomState(seed)
+    frac = target / len(y)
+    picks = []
+    for c in range(N_CLASSES):
+        pos = np.where(y == c)[0]              # all epochs of class c
+        k = int(round(frac * len(pos)))        # same fraction of every class
+        picks.append(rng.choice(pos, size=k, replace=False))
+    return np.sort(np.concatenate(picks))
+
+
+def load_sleep_edf(split: str = "train", subsample: int | None = SUBSAMPLE_TARGET,
+                   seed: int = SUBSAMPLE_SEED, force_rebuild: bool = False,
+                   verbose: bool = True):
     """Load cached Sleep-EDF arrays for a split, building the cache on first use.
 
     Parameters
     ----------
     split : {"train", "test"}
+    subsample : int or None, default 20000
+        TRAINING loads only. If a positive int, return a deterministic class-stratified
+        subsample of that many epochs (see `subsample_indices`) — this is the DEFAULT so
+        that every model on the complexity ladder trains on the IDENTICAL 20,000-epoch
+        set without anyone having to remember to ask. Pass ``subsample=None`` (or 0) to
+        opt out and get the FULL training set (155,334) — a deliberate, visible act.
+        IGNORED for the test split, which is ALWAYS returned whole (never subsampled).
+    seed : int, default 42
+        Seed for the training subsample (fixed, so the subsample is reproducible).
     force_rebuild : bool
         Regenerate the cache from the raw EDFs even if it exists.
+    verbose : bool, default True
+        Print a one-line record of what a training load returned (subsample vs full), so
+        any training run visibly logs the data it trained on.
 
     Returns
     -------
     X : ndarray (n_epochs, 3000) float32   — per-epoch z-normalised EEG Fpz-Cz
     y : ndarray (n_epochs,) int in {0,1,2,3,4}  — AASM stages W,N1,N2,N3,REM
+
+    Notes
+    -----
+    Subsampling is pure index selection on the already-cached full arrays (fast, in
+    memory) — it never rebuilds the cache or re-reads any EDF.
     """
     if split not in ("train", "test"):
         raise ValueError(f"split must be 'train' or 'test'; got {split!r}")
     Xp, yp = _cache_paths(split)
     if force_rebuild or not (Xp.exists() and yp.exists()):
         build_processed_data(force_rebuild=force_rebuild)
-    return np.load(Xp), np.load(yp)
+    X, y = np.load(Xp), np.load(yp)
+
+    # Test is ALWAYS whole — never subsampled, regardless of `subsample`.
+    if split == "test":
+        return X, y
+
+    # Training: subsample by default; explicit opt-out (None / 0) returns the full set.
+    if subsample:
+        idx = subsample_indices(y, target=subsample, seed=seed)
+        X, y = X[idx], y[idx]
+        if verbose:
+            print(f"[sleep_edf] training load: {len(y):,}-epoch stratified subsample "
+                  f"(seed {seed})")
+    elif verbose:
+        print(f"[sleep_edf] training load: full training set ({len(y):,} epochs)")
+    return X, y

@@ -529,11 +529,15 @@ epochs across the train/test boundary.
 Class balance (post-trim) & the deliberate NO-REBALANCING decision
 Overall post-trim balance: W 33.7% / N1 11.0% / N2 35.4% / N3 6.7% / REM 13.2%.
 N1 and N3 are minority classes; N3 is rarest at 6.7%. We deliberately DO NOT rebalance
-or reweight (no oversampling, no class weights). Reason: faithfulness is the object of
-study, and resampling/reweighting would change what the model learns and thereby the
-attributions, confounding the faithfulness measurement itself. FLAG carried forward:
-per-class faithfulness for the scarce classes (N1, and especially N3) must be reported
-WITH caveats about sample scarcity.
+or reweight (no oversampling, no class weights). Reason: rebalancing would substitute an
+ARTIFICIAL class prior for the true one, recalibrating the model's decision function to a
+distorted world — and since faithfulness probes the model's REAL decision function, that
+recalibration would confound the very thing we measure. Class imbalance is therefore
+handled by MEASUREMENT — per-class F1/recall, balanced accuracy, and the concentration
+analysis — NOT by data manipulation. The same principle governs the training subsample
+(see SUBSAMPLING below), which likewise preserves the natural class balance exactly and
+for the same reason. FLAG carried forward: per-class faithfulness for the scarce classes
+(N1, and especially N3) must be reported WITH caveats about sample scarcity.
 
 Preprocessing (per-epoch z-norm; NO bandpass filter)
 Each 30-s epoch is z-normalised by ITS OWN mean/std (per-epoch; guard std==0). We
@@ -621,3 +625,96 @@ explicit PERCENTAGE (n_regions = round(100/pct)); Sleep-EDF passes REGION_SIZE_P
 = 2.0 per call. src/config/sleep_edf.py holds INPUT_LENGTH=3000, IN_CHANNELS=1, N_CLASSES=5,
 the region size (60 samples / 2% / 50 regions), and an import-time assert proving the exact
 division. NOT yet applied to any model/harness run — config + log only.
+
+
+SUBSAMPLING (training set → fixed 20,000-epoch stratified subsample)
+Notebook: sleep_edf/notebooks/02_dataset_construction.ipynb (Step D). Wired into
+sleep_edf/loader.py as the DEFAULT for training loads.
+
+Decision. Train on a fixed 20,000-epoch stratified random subsample of the training set.
+The second marker required ≥10,000 training epochs; 20K sits comfortably above that floor
+while keeping the minority classes viable. This is a COMPUTE-BUDGET decision — to make
+five models × five seeds feasible — NOT a scientific one: it changes how much data we
+train on, not what we measure.
+
+Method (keep all subjects, thin epochs-per-subject). Stratified epoch-level sampling that
+keeps ALL 62 training subjects, each contributing a proportional random slice of their
+night — rather than dropping whole subjects. Rationale: the task classifies single 30-s
+epochs INDEPENDENTLY, so whole contiguous nights give no modelling benefit; cross-subject
+diversity (many individuals' EEG) matters more than per-subject depth for learning
+generalisable staging, and keeping all 62 subjects preserves that diversity for the same
+epoch budget.
+
+No rebalancing (natural class balance preserved exactly). Subsample balance
+W 34.1% / N1 10.9% / N2 35.1% / N3 6.6% / REM 13.3% — identical to the full training set.
+Same reason as the NO-REBALANCING decision above: rebalancing would replace the true class
+prior with an artificial one, recalibrating the decision function to a distorted world and
+confounding the faithfulness measurement (which probes the model's REAL decision function).
+Imbalance is handled by measurement (per-class F1/recall, balanced accuracy) and the
+concentration analysis, not by data manipulation.
+
+Identical across the ladder. Defined by a deterministic class-stratified function
+(subsample_indices, seed 42) that is the SINGLE source of truth in sleep_edf/loader.py,
+wired in as the DEFAULT for training loads with an explicit, logged opt-out for the full
+set (load_sleep_edf("train", subsample=None) → 155,334). Every model on the complexity
+ladder therefore trains on the SAME 20K epochs, so model complexity remains the only
+variable across the ladder.
+
+Minority classes survive. N1 = 2,185 and N3 = 1,329 (rarest) epochs in the subsample —
+retained as a genuine property of sleep and reported with a scarcity caveat, NOT rebalanced
+away.
+
+Test set kept whole. The test split is NEVER subsampled: 40,145 epochs, 16 subjects —
+evaluation stays on the full, natural-balance test set.
+
+Effect on claims (acknowledged limitation). Subsampling may lower a model's ABSOLUTE
+accuracy relative to full-set training. But the study concerns the COMPLEXITY→FAITHFULNESS
+relationship — the SHAPE of that relationship across the ladder — not any single model's
+absolute accuracy; identical training data across the ladder keeps that comparison clean.
+Acknowledged as a limitation.
+
+
+BASELINE REDEFINITION (bottom rung: raw logistic → band-power logistic)
+Notebooks: sleep_edf/notebooks/04_model1_linear_baseline.ipynb (raw, superseded) →
+04b_model1_bandpower_logistic.ipynb (new bottom rung). Features: sleep_edf/bandpower.py.
+
+Decision. The bottom rung of the complexity ladder is BAND-POWER + logistic regression,
+replacing raw logistic regression on the raw 3000-sample epoch.
+
+Why raw was rejected. Raw multinomial logistic regression on the raw EEG epoch is
+NEAR-CHANCE: balanced accuracy ~0.22 (vs 0.20 chance), N3 recall ~0.03. A linear model on
+raw samples cannot represent the frequency/shape structure that distinguishes sleep stages,
+so it neither learns the task NOR provides readable ground truth — it fails at both jobs a
+bottom rung could do.
+
+Why band-power (justified on Sleep-EDF / sleep-physiology terms). The rung's PURPOSE is not
+to be a competitive classifier but to be a model whose reasoning is DIRECTLY READABLE from
+physiology, so the XAI/CMI machinery can be validated against known ground truth ("do my
+attribution methods recover the band I know the model uses?") BEFORE it is trusted on the
+opaque CNNs — the supervisor's start-simple-and-interpretable-then-go-complex framing. Sleep
+stages have well-known frequency-band signatures (above all N3 ↔ delta), so reducing each
+30-s epoch to one power value per standard band (delta 0.5–4, theta 4–8, alpha 8–12,
+sigma/spindle 12–16, beta 16–30 Hz; Welch PSD integrated per band, log-power) makes
+logistic regression BOTH a legitimate simple baseline AND a readable ground-truth anchor:
+each coefficient maps one-to-one onto a named band. Small, named feature set by design (5
+features, not an opaque vector) — the legibility is the whole point. Parameter count 30
+(5 classes × 5 bands + 5 intercepts) — the ladder's low point.
+
+Consequence noted (input-story of the ladder). This rung's INPUT is band-power features,
+whereas the CNN and transformer rungs see the RAW signal (the raw-signal, no-filter decision
+still governs them). So this baseline's role is XAI-MECHANISM VALIDATION (attribution over
+named bands vs known physiology), NOT a directly-comparable point on the raw-signal
+faithfulness curve. The complexity→faithfulness comparison proper runs across the raw-input
+CNNs and transformer; the band-power baseline sits alongside as the interpretable anchor.
+
+Ground-truth expectations (recorded in ADVANCE, to check the XAI against later).
+  PRIMARY  — N3 (deep sleep) ↔ delta (0.5–4 Hz): high-amplitude slow waves; the strongest,
+             least ambiguous signature and the CLEAN primary validation target — a
+             trustworthy attribution on N3 must recover delta.
+  secondary — N2 ↔ sigma/spindle (12–16 Hz) + theta; Wake ↔ alpha (8–12) + beta (16–30);
+             REM ↔ low-amplitude mixed / theta (weak); N1 ↔ theta (transitional, weakest).
+Feature-level preview (no training) already shows the signature: per-class mean log-band-
+power has N3 delta highest (0.48 vs ~0.31 elsewhere) with higher bands suppressed. After
+training, the learned class×band coefficients are read back and compared to this table
+directly — the readable-ground-truth property in action. Functional check expected: balanced
+accuracy meaningfully above 0.20 chance and N3 recall far above the raw model's ~0.03.
