@@ -968,3 +968,59 @@ full precision.
 Model 1 note. The band-power logistic baseline (Model 1) was trained on CPU (sklearn, 30
 parameters) — unaffected in any way that matters, but recorded here so the backend difference
 across the ladder is on the record: Model 1 = CPU/sklearn, Models 2–5 = MPS/torch.
+
+## Decision: Model 3 — medium 1D CNN, third ladder rung (12 Aug 2026)
+
+Training notebook `sleep_edf/notebooks/model3/07_model3_medium_cnn.ipynb` (training only; XAI/CMI
+is a later task). Mirrors the Model 2 notebook section-for-section.
+
+  - Variant: `build_cnn("medium")` — `CNN_VARIANTS["medium"] = [32, 64, 64]` (one block deeper
+    and wider than Model 2's `[16, 32]`). Built from the shared harness; no architecture code in
+    sleep_edf/.
+  - Parameters: **93,285 total = 92,960 conv trunk + 325 head** (vs Model 2's 8,181).
+  - Receptive field: **106 samples = 1060 ms** at 100 Hz (vs Model 2's 46 / 460 ms); downsampling
+    1/8, sequence length at head 375. This is the first rung whose RF spans a full AASM
+    stage-defining event (~500–1500 ms) rather than sitting at its lower edge — the rung where a
+    faithfulness dip is hypothesised.
+
+Everything else is unchanged from Model 2 by design (controlled complexity ladder — only the
+variant differs): same fixed subject-level split (17,742 train / 2,258 val) and untouched
+40,145 test set; same `CNN_KERNEL_SIZE = 15`; same ladder-wide stopping rule
+(`val_balanced_accuracy`, max, patience 10, min_delta 0.002, max_epochs 100); same 5 seeds
+[0–4]; same MPS device, batch size, optimizer; same `run_all_seeds` helper; same learning-
+verification presentation. See the ladder-wide entries (kernel size, val split, stopping rule,
+MPS device) rather than a re-statement here.
+
+Addition over Model 2: a ladder-comparison cell prints Model 2 vs Model 3 side by side (params,
+RF, balanced accuracy, macro-F1, N1/N3 recall). Model 2's numbers are read from its saved
+aggregate JSON (its RF recomputed from the recorded variant/kernel), not hardcoded. No new
+judgement calls beyond those already logged for Model 2 (majority floor = N2, per-seed
+checkpoints, batched test inference, no inner epoch bar), which carry over unchanged.
+
+## Decision: Model 4 — deep 1D CNN, fourth ladder rung (12 Aug 2026)
+
+Training notebook `sleep_edf/notebooks/model4/08_model4_deep_cnn.ipynb` (training only; XAI/CMI
+is a later task). Mirrors the Model 3 notebook section-for-section. Largest, deepest CNN on the
+ladder.
+
+  - Variant: `build_cnn("deep")` — `CNN_VARIANTS["deep"] = [64, 128, 128, 256]` (four blocks, vs
+    Model 3's three). Built from the shared harness; no architecture code in sleep_edf/.
+  - Parameters: **863,557 total = 862,272 conv trunk + 1,285 head** (Model 2: 8,181; Model 3:
+    93,285) — roughly a 100× span in complexity from the bottom CNN rung to the top.
+  - Receptive field: **226 samples = 2260 ms** at 100 Hz (Model 2: 460 ms; Model 3: 1060 ms);
+    downsampling 1/16, sequence length at head 187. Model 4's RF sits **above** the AASM
+    stage-defining event scale (~500–1500 ms): across the CNN rungs the RF sweeps from the lower
+    edge (Model 2, minimal event) through inside it (Model 3, one full event) to spanning
+    multiple events with surrounding context (Model 4).
+
+Everything else is unchanged from Model 3 by design (controlled complexity ladder — only the
+variant differs): same fixed subject-level split (17,742 train / 2,258 val) and untouched
+40,145 test set; same `CNN_KERNEL_SIZE = 15`; same ladder-wide stopping rule
+(`val_balanced_accuracy`, max, patience 10, min_delta 0.002, max_epochs 100); same 5 seeds
+[0–4]; same MPS device, batch size, optimizer; same `run_all_seeds` helper; same learning-
+verification presentation. See the ladder-wide entries rather than a re-statement here.
+
+The §5 ladder-comparison cell is extended to show all three CNN rungs (Models 2, 3, 4) side by
+side with per-step deltas; Models 2 and 3 are read from their saved aggregate JSONs (RF
+recomputed from the recorded variant/kernel), not hardcoded. No new judgement calls beyond
+those already logged for Model 2, which carry over unchanged.
