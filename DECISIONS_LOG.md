@@ -1375,3 +1375,118 @@ Decisions made that were not specified:
     skips that delta gracefully if those files are incomplete (e.g. Model 2's KernelSHAP not yet finished).
   - Notebook `11_...`, figures `sleep_edf_11_model3_xai_*`, artifacts `model3_xai_*` — parallel to Model 2's
     `10_/sleep_edf_10_/model2_xai_*`.
+
+## Decision: Model 4 XAI/CMI run — deep CNN, the controlled-complexity rung (14 Aug 2026)
+
+Notebook `sleep_edf/notebooks/model4/12_model4_xai_cmi.ipynb` (prepared, not executed — the user runs
+it). Mirrors the Model 3 notebook (`11_...`) section-for-section, inline; third entry in the XAI series
+(10–13). Only the model changes: Model 4 (deep CNN [64,128,128,256], 863,557 params, RF 2260 ms), its 5
+seed checkpoints. All settings, the shared evaluation subset and the code are identical — see the
+phase-level entries above (n_samples 8000 + pe 200, zero PM, predicted-class target, FA-CPU/IG-MPS/
+KS-MPS-batched, N=500, 5 seeds); NOT restated. Nothing forced a deviation.
+
+Model 4 is the ladder's CONTROLLED complexity comparison: ~9× Model 3's parameters (863,557 vs 93,285)
+at essentially identical balanced accuracy (0.7439 vs 0.7453), so a CMI change 3→4 is attributable to
+complexity rather than competence — not true of the 2→3 step (where accuracy also rose). Noted in the
+notebook markdown.
+
+Eval subset: LOADS the shared `xai_eval_subset_idx.npy` (same 500 as Models 2/3); raises if missing.
+
+Costs (measured; the deep CNN's forward is much slower): FA ~6.5 min, IG ~2 min, CMI(FA+IG) ~12 min,
+concentration ~6 min, KernelSHAP ~2 HOURS (~2.8 s/sample × 500 × 5, vs Model 3's ~0.9 s → ~37 min). So
+§1–§8 ≈ ~27 min, then §9 ~2 h. Estimates set accordingly; §9 still times seed 0 and projects live, and
+saves per seed (interruption loses ≤1 seed).
+
+§11 extended to a THREE-rung ladder comparison (Models 2, 3, 4): CMI/DDS/PES per method + concentration +
+cross-method agreement, with the last-step delta, reading Models 2 and 3 from their saved results JSONs
+(missing JSON reported and that rung skipped — nothing hardcoded). Added a CMI-vs-concentration plot
+across the rungs so the faithfulness trend and the concentration confound can be read directly (CMI rose
+0.428→0.475 while concentration rose 0.087→0.115 through Model 3, so part of the rise may be mechanical).
+Watch-threads surfaced explicitly per the brief: CMI DIRECTION (has risen twice; if Model 4 continues,
+the ladder shows faithfulness INCREASING with complexity, against the monotonic-degradation hypothesis);
+PES CEILING (Model 2 0.990/0.998, Model 3 pinned 1.000 — if Model 4 also pins, CMI ≈ DDS and the
+consistency term is not discriminating, a finding about the metric); CONCENTRATION as confound (plotted
+against CMI); DIP CHECK (computed though nothing has dipped); HEATMAP STRUCTURE (Model 2 near-uniform,
+Model 3 class-level but not within-class localised — whether Model 4's 2260 ms RF localises).
+
+Decisions not specified: notebook `12_...` / figures `sleep_edf_12_model4_xai_*` / artifacts
+`model4_xai_*`; the ladder-comparison cell iterates over available previous-rung JSONs (extends cleanly
+to Model 5); the CMI-vs-concentration plot is a new figure `sleep_edf_12_model4_xai_cmi_vs_concentration.png`.
+
+## Decision: PES has not dropped for the nonlinear CNNs — a finding about CMI, not the models (14 Aug 2026)
+
+The named watch-thread — whether PES (the consistency term in CMI) would fall below Model 1's PES = 1.0
+once the models are nonlinear — resolves NEGATIVE. Across Models 2 and 3, PES sits at **0.976–1.000**
+(most method/seed values exactly 1.000; Model 3 was exactly 1.000 on all 5 seeds for both FA and IG). The
+original expectation, that Model 1's PES = 1.0 was a *linear-model artifact*, is **not supported** — PES
+is **saturating at the ceiling**, not breaking away from it.
+
+Likely reason (belongs in the discussion, as a property of the METRIC not the models): PES measures only
+the SIGN-CONSISTENCY of the per-sample DDS (fraction of samples with DDS > 0 minus fraction < 0). Failing
+it would require an attribution whose deletion curves are *anti-correlated* with the model's reliance
+(DDS negative on a material fraction of samples) — i.e. an explanation that is worse than random. Any
+attribution method carrying real signal clears that bar on essentially every sample, so PES pins at ~1.0.
+Consequence: since CMI is the harmonic mean of |DDS| and |PES|, **with PES at the ceiling CMI carries no
+information beyond DDS in this setting — the consistency component is not discriminating.** This is a
+limitation of CMI as applied here, to be stated in the discussion, and it re-reads the whole faithfulness
+ladder as effectively a DDS ladder.
+
+Notebook fix (so the finding is not misread): the §11 PES watch-thread flag in the Model 2/3/4 XAI
+notebooks was over-reading "any value < 1.0" as PES breaking away. Replaced with three bands — SATURATED
+(min PES >= 0.97, most = 1.000; the observed case, reported with the CMI-carries-no-info-beyond-DDS
+consequence), near-ceiling ([0.9, 0.97): mostly saturated with single-sample noise), and GENUINE DROP
+(min PES < 0.9: the consistency component is discriminating). Applied to Models 2, 3 and 4 notebooks and
+the Model 4 builder (which Model 5's XAI notebook will be templated from).
+
+## Decision: Model 5 XAI/CMI run — transformer (patch 60), attention as a 4th method (14 Aug 2026)
+
+Notebook `sleep_edf/notebooks/model5/13_model5_xai_cmi.ipynb` (prepared, not executed; new file alongside the
+Model 5 training notebooks, which were not touched). Mirrors the Model 4 notebook, adds §5 (attention).
+Fourth and final rung of the XAI series (10–13). Model 5 = transformer, PATCH 60 (the ladder rung, not the
+falsified patch-15 variant): 1,204,741 params, 50 tokens. Settings identical to Models 2–4 (see phase-level
+entries: n_samples 8000 + pe 200, zero PM, predicted-class target, FA-CPU/IG-MPS/KS-MPS-batched, N=500,
+5 seeds; the shared 500-sample eval subset is LOADED). The 4→5 step is framed in the notebook as
+architecture-family (conv→attention) + fit quality (bal. acc 0.6603 vs 0.7439), NOT a complexity step
+(~1.4× params, the tightest gap on the ladder). Costs measured: FA ~7 min, IG ~1.5 min, attention ~1 min,
+CMI(FA+IG+Att) ~21 min, concentration ~6 min, KernelSHAP ~1.5 h; §1–§9 ≈ ~36 min then §10.
+
+ATTENTION — the harness wiring and the reduction decision.
+  - The harness attention module (`harness/xai/attention.py`) is an UNIMPLEMENTED STUB
+    (`extract_attention_weights` raises NotImplementedError; its "cls_token" option is inapplicable — the
+    transformer has no CLS token, it mean-pools). `nn.TransformerEncoder` does not return attention weights.
+    So attention is extracted INLINE in the notebook by reproducing the encoder forward layer-by-layer
+    (respecting norm_first) with `self_attn(..., need_weights=True)` — verified to match `model()` logits
+    EXACTLY (max|Δ|=0). No harness change (the stub was not touched).
+  - Reduction to 50 per-region scores (a METHODS decision, taken by the supervisor, logged as CHOICES not
+    defaults): LAST LAYER (not rollout, not mean-over-layers) → mean over the 8 heads → mean over the 50
+    queries = each region's "attention received". One token ↔ one 60-sample region (patch 60), so no
+    token→region aggregation. Rationale: the thesis question is whether RAW attention — what practitioners
+    read off a model — tracks feature importance (Jain & Wallace 2019); rollout would test a *repaired*
+    version and make a good score ambiguous between vindicating attention and validating the correction.
+    Head=mean and query=attention-received fit the mean-pooled model; attention is class-AGNOSTIC (one
+    ordering per sample) and non-negative. **Attention rollout (Abnar & Zuidema 2020) is a PRE-REGISTERED
+    FOLLOW-UP:** if last-layer attention scores poorly on CMI, "does rollout recover it?" is planned, so
+    running it later is a contingency, not an improvised response.
+
+FINDING (surfaced in §5, expected to hold at N=500): this transformer's attention COLLAPSES TO EXACTLY
+UNIFORM in its deeper layers — std across the 50 regions is 0.0 from layer 3 onward (only layer 0 has
+structure, std ~0.013). So LAST-LAYER attention received = 1/50 for every region: **no per-region signal.**
+Consequence for the chosen reduction: the attention attribution is DEGENERATE — undefined region ordering,
+CMI ≈ 0, and rank-agreement with FA/KS/IG undefined (a constant vector has no Spearman). This is a genuine
+result — the extreme "attention ≠ feature importance" case, consistent with deep/underfit transformer
+rank-entropy collapse — NOT a pipeline bug. §5 reports the `std across regions` and flags uniformity
+explicitly; the pre-registered rollout follow-up is now clearly motivated (earlier layers still carry
+structure).
+
+§12 four-method presentation + four-rung ladder comparison (Models 2–5): CMI/DDS/PES for the three shared
+methods across all rungs with per-step deltas (read from saved JSONs, nothing hardcoded); Attention reported
+Model-5-only; concentration + the CMI-vs-concentration plot across the four rungs; six pairwise cross-method
+agreements with the three ATTENTION pairs surfaced (the Jain & Wallace watch-thread). The dip-check (§11) is
+flagged as load-bearing at this rung: Model 5's KernelSHAP is the least-converged, so a LOW KS CMI vs Model 4
+must be read against the §11 top-25/top-10 stability numbers (under-sampling deflates CMI); a HIGH one is
+safe. PES flag uses the corrected saturated/near-ceiling/genuine-drop bands.
+
+Judgement calls: attention extracted inline (harness stub unimplemented; verified faithful; no harness edit);
+`pair_agree` made robust to undefined per-sample Spearman (skips constant/near-uniform-attention samples and
+reports the fraction skipped — heavy skipping is itself the uniform-attention signal); attention treated as
+Model-5-only in the ladder comparison; artifacts `model5_xai_*` / figures `sleep_edf_13_model5_xai_*`.
