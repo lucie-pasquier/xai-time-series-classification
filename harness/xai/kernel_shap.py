@@ -69,6 +69,7 @@ def kernel_shap(
     n_samples: int = DEFAULT_N_SAMPLES,
     seed: int | None = DEFAULT_SEED,
     dtype: torch.dtype = torch.float64,
+    perturbations_per_eval: int = 1,
 ) -> np.ndarray:
     """Per-region KernelSHAP attribution for one signal, via Captum.
 
@@ -96,6 +97,17 @@ def kernel_shap(
         Precision of the forward/input tensors (float64 for the Model-1 harness;
         native-torch Models 2-5 can pass float32). NB: Captum returns the Shapley
         coefficients in float32 regardless — immaterial for a stochastic estimate.
+    perturbations_per_eval : int, default 1
+        How many sampled coalitions Captum evaluates per forward call. Purely a
+        COMPUTE-LAYOUT knob: it does not change which coalitions are sampled (that
+        is fixed by n_samples + seed), so the attribution is unchanged (verified:
+        pe=1 vs pe=200 agree to max|Δ| ≈ 8e-8, float64 rounding). Default 1
+        reproduces the original behaviour exactly. Batching many coalitions into one
+        forward is a large speed-up on a GPU/MPS backend (one batched forward vs many
+        tiny batch-1 forwards) but SLOWER on CPU; see DECISIONS_LOG / the methodology
+        notebook for the measured timings. `predict_proba` receives a
+        (perturbations_per_eval, length) batch and must handle it (torch_predict_proba
+        does).
 
     Returns
     -------
@@ -137,6 +149,7 @@ def kernel_shap(
         target=int(target_class),
         feature_mask=feature_mask,
         n_samples=n_samples,
+        perturbations_per_eval=perturbations_per_eval,   # compute-layout only (see docstring)
         return_input_shape=False,      # -> (1, n_regions): one coeff per region
     )
     return attr.detach().cpu().numpy().ravel().astype(float)

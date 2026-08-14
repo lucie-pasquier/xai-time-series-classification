@@ -1024,3 +1024,354 @@ The §5 ladder-comparison cell is extended to show all three CNN rungs (Models 2
 side with per-step deltas; Models 2 and 3 are read from their saved aggregate JSONs (RF
 recomputed from the recorded variant/kernel), not hardcoded. No new judgement calls beyond
 those already logged for Model 2, which carry over unchanged.
+
+## Decision: Model 5 — Transformer, top ladder rung (14 Aug 2026)
+
+Training notebook `sleep_edf/notebooks/model5/09_model5_transformer.ipynb` (training only; XAI/CMI
+and the attention-weight analysis are a later task). Mirrors the Model 4 notebook
+section-for-section. Only the architecture changes from Model 4; it is the only
+non-convolutional rung.
+
+  - Architecture: `build_transformer` from `harness/models/transformer.py` (Transformer encoder,
+    6 layers, d_model 128, 8 heads, GELU, pre-norm). Built from the shared harness; no
+    architecture code in sleep_edf/.
+  - Patch size: **60**, sourced from `sleep_edf/config.py::TRANSFORMER_PATCH_SIZE` — one token per
+    60-sample RegionGrid region, **not** the harness default of 1 (which would give 3000 tokens
+    and O(3000²) attention). The notebook hard-asserts the config patch reached the embedding
+    (Conv1d kernel *and* stride) and refuses to train otherwise.
+  - Parameters: **1,204,741**. Tokens: **50** (3000 / 60, exact — no padding or truncation).
+    Positional embedding **50 × d_model** (1×50×128 = 6,400 params), not 3000 × d_model.
+  - Receptive field: **global** (self-attention — every token attends to all 50), so this rung
+    sits *outside* the CNN receptive-field-vs-AASM-event framing rather than extending it.
+
+Ladder framing recorded in the notebook: at 1,204,741 params vs Model 4's 863,557, Model 5 is
+only **~1.4×** the previous rung — the tightest gap on the ladder (Models 2→3 and 3→4 are ~11×
+and ~9×) **and** the only change of architecture family. A Model 4 vs Model 5 difference is
+therefore better read as **convolution-vs-attention** than as another step along the parameter
+axis. patch_size = 60 was chosen so attention weights map one-to-one onto the CMI region grid
+with no aggregation step — this is what makes the Model 5 attention-weight analysis possible.
+
+Trains on the UNMODIFIED ladder-wide protocol. Verified in the pre-checks that the transformer
+learns with **no learning-rate change, no warmup, no optimizer change** — same fixed split
+(17,742 / 2,258), untouched 40,145 test set, same stopping rule (`val_balanced_accuracy`, max,
+patience 10, min_delta 0.002, max_epochs 100), same 5 seeds [0–4], same MPS device, batch size,
+optimizer, and `run_all_seeds` helper. The top rung is not a special case, so the complexity
+comparison stays fully controlled. See the ladder-wide entries rather than a re-statement here.
+
+Pre-check findings (Step 1, before finalising the notebook):
+  - **MPS op support:** all ops MPS-native — forward+backward runs with no
+    `NotImplementedError`, so **no `PYTORCH_ENABLE_MPS_FALLBACK` needed** (and thus no per-op
+    CPU-transfer penalty). Timing, batch-16 forward+backward: MPS **7.2 ms/step** vs CPU
+    **54.4 ms/step** (~8×).
+  - **Determinism, with the divergence control:** two MPS runs of seed 0 were **bit-identical**
+    (max|Δ train_loss| = **0.0**), *and* seeds 0 vs 1 genuinely diverged (max|Δ| = **0.063**).
+    The second number is the control: it rules out the bit-identity being an artefact of dropout
+    being silently inactive. So the transformer — dropout and all — carries **no extra backend
+    variance**; its 5-seed error bars rest on the same footing as the CNNs'. (Both numbers logged
+    because the control is what makes the finding meaningful.)
+  - **Memory:** batch-16 train step ~155 MB; a 512-row prediction chunk ~1.35 GB on MPS; the
+    40,145-epoch test set runs in 79 chunks of 512 (the same chunked-predict path as Models 2–4).
+    Batch 16 fits comfortably.
+  - **Learnability smoke test:** 5 epochs on the full 17,742 set with the exact protocol —
+    train_loss 1.48→0.88, val balanced accuracy 0.42→0.59 (well above 0.20 chance, still rising),
+    ~14.4 s/epoch on MPS. Learning cleanly; no STOP, no protocol change.
+
+No new judgement calls beyond those already logged for Model 2 (majority floor = N2, per-seed
+checkpoints, batched test inference, no inner epoch bar), which carry over unchanged. The §5
+comparison is extended to all four rungs; the transformer's RF shows as `global` and its RF
+delta as `—` (no finite receptive field to difference).
+
+## Decision: Model 5 side experiment — transformer at patch_size = 15 (resolution test) (14 Aug 2026)
+
+A SIDE EXPERIMENT appended to the Model 5 notebook (§6), not a replacement: the patch-60 model
+remains *the* Model 5 ladder rung, with its results, cells and artifacts intact. Prepared, not
+run — the user trains it.
+
+Motivation. Model 5 at patch 60 (50 tokens) reached balanced accuracy 0.6603 ± 0.0049 — the
+WORST rung on the ladder, below even the 8,181-param shallow CNN (0.7133). The losses
+concentrate in N1 (recall 0.573 → 0.350) and REM (0.739 → 0.630), which bleed heavily into each
+other, while W and N2 hold up. Resolution hypothesis: a 600 ms patch is embedded by a single
+linear projection, so fine within-patch structure is compressed before attention sees it, and
+N1/REM are the stages that most depend on that structure. patch 15 (200 tokens, 4 per 60-sample
+region) tests whether the underperformance is a consequence of the PATCHING choice or is
+ARCHITECTURAL.
+
+Origin / pre-registration — stated precisely. patch = 15 is Sleep-EDF's measured ~15-sample
+autocorrelation coherence grain (the 1/e correlation length; see the region-size and CNN-kernel
+entries), i.e. the same signal scale the CNN kernel = 15 was set to — so it is a signal-grounded,
+pre-registered SCALE, not an arbitrary choice. Honesty note: the log did not previously contain
+an explicit "if the transformer underfits, fall back to patch 15" clause; the pre-registration
+is of the 15-sample scale, and this entry is where that scale is first applied as a transformer
+patch size. (Recording this so the provenance is not overstated.)
+
+Promotion criterion — fixed BEFORE the result. patch 15 is promoted to *the* Model 5 rung ONLY
+if balanced accuracy recovers into the CNN range (~0.71+). A marginal gain does not justify the
+cost: patch 60 gives exactly one token per CMI region (attention weights map onto the region
+grid with no aggregation), whereas patch 15 gives four tokens per region, requiring a documented
+within-region aggregation step for the attention-weight analysis. Either way the patch-60 result
+stays in the thesis: if patch 15 recovers accuracy that is evidence the underperformance was a
+resolution artifact rather than attention being unsuited to the task; if not, it strengthens the
+architectural reading. The comparison belongs in the discussion regardless of outcome.
+
+Protocol. Only patch_size changes. Identical fixed 17,742/2,258 split, untouched 40,145 test
+set, stopping rule (`val_balanced_accuracy`, max, patience 10, min_delta 0.002, max_epochs 100),
+5 seeds [0–4], MPS, batch size and `run_all_seeds` helper. Distinct `MODEL_NAME =
+"model5_transformer_patch15"` → separate JSONs, checkpoints and confusion figure; no patch-60
+artifact is overwritten, renamed or moved.
+
+Figures. 1,218,181 params (+13,440 vs patch-60's 1,204,741, from the 200 × d_model positional
+embedding vs 50 × d_model, partly offset by the smaller patch-embed conv); 200 tokens
+(3000 / 15, exact, no padding); ~16× the self-attention cost of patch 60 (O(tokens²)), so
+notably slower per epoch.
+
+Outcome (run 14 Aug 2026) — a FALSIFIED HYPOTHESIS, not merely a rejected variant. Promotion
+criterion NOT met and patch 15 is WORSE on both headline metrics: balanced accuracy 0.6395 vs
+patch 60's 0.6603, macro-F1 0.5989 vs 0.6296. No promotion — patch 60 stays THE Model 5 ladder
+rung.
+
+The resolution hypothesis is NOT supported. It predicted N1 and REM would recover with the finer
+patch; instead **N1 got WORSE (recall 0.350 → 0.316)**, **REM improved only marginally
+(0.630 → 0.653)**, and **N2 dropped notably (0.674 → 0.601)**. So the transformer's
+underperformance is not a within-patch resolution artifact.
+
+The alternative the evidence points to is **sample efficiency, not resolution.** Patch 15 has 200
+tokens vs 50 — more positional structure to learn — on the *same* 17,742 training epochs. Its
+seeds stopped earlier (**18–21 epochs vs patch 60's 22–31**) with earlier best epochs (**8–11 vs
+12–21**): it overfits sooner and settles worse. Making the problem finer-grained made the data
+limitation worse, not better.
+
+Consequence for the thesis (discussion chapter): the transformer's underperformance is better
+attributed to **the architecture's data requirements at this scale** than to the patching choice.
+That is a stronger claim than either "we chose the patch size badly" or "we didn't check" — and it
+is available *only because the patch-15 fallback was pre-registered and then tested*. All patch-15
+artifacts (JSONs, checkpoints, confusion figure) are KEPT as the evidence for this argument, not a
+failed run to discard: the falsification is itself a result.
+
+## Decision: harness change — perturbations_per_eval on kernel_shap (14 Aug 2026)
+
+`harness/xai/kernel_shap.py::kernel_shap` gains an additive keyword `perturbations_per_eval`
+(default 1). It is a pure COMPUTE-LAYOUT knob — it does not change which coalitions are sampled
+(that is fixed by `n_samples` + `seed`), only how many are evaluated per forward call. Gate
+evidence: `pe=1` vs `pe=200` attributions agree to **max|Δ| = 8.01e-08** (float64 rounding), so
+results are unaffected. Motivation: batching many coalitions into one forward is a ~13× speed-up
+on MPS (one batched forward vs thousands of tiny batch-1 forwards) but a ~13× *loss* on CPU — the
+lever that makes a converged KernelSHAP `n_samples` affordable (see next entry and §6 of the
+methodology notebook). Default 1 reproduces prior behaviour exactly.
+
+## Decision: XAI/CMI phase parameters, justified empirically (14 Aug 2026)
+
+The XAI/CMI faithfulness phase (Models 2–5, attribution over the 50-region temporal grid) has
+parameters chosen from measured evidence rather than derived — the first such in the thesis. The
+executable evidence lives in `sleep_edf/notebooks/methodology/00_methodology_checks.ipynb`; this
+entry records the decisions and, where relevant, their limitations.
+
+KernelSHAP n_samples = 8000 — a DECISION and a documented LIMITATION.
+    KernelSHAP over 50 regions does **not** fully converge within tractable compute. On Model 2
+    seed 0 (10 stratified samples, zero PM), sweeping n_samples ∈ {200, 500, 1000, 2000, 4000,
+    8000}: CMI climbs monotonically 0.154 → 0.259 → 0.292 → 0.338 → 0.350 → 0.379 (n=200 is under
+    HALF the n=8000 value), and consecutive-setting Spearman on the attribution vectors only
+    reaches **mean 0.93 / min 0.75** by 4000→8000 — approaching but not at stability. 8000 is
+    chosen as the best-converged setting affordable with MPS coalition-batching (~1.34 s/sample vs
+    ~11.8 s unbatched). Evidential status, stated in the notebook: the **Spearman** curve is the
+    primary evidence (computed on the attributions directly, not aggregated over samples, so free
+    of small-N noise); the **CMI** curve is supporting only (aggregated over 10 samples, noisy).
+    LIMITATION: absolute CMI is biased **low** (still rising at 8000, ≥~8% short of converged), so
+    **absolute CMI values are comparable WITHIN this study only — not against published CMI
+    figures.** The ladder COMPARISON stays valid because the same n_samples (hence the same
+    systematic bias) is applied to every rung — an assumption tested in §2 by re-running the sweep
+    on Model 5 and checking its trajectory tracks Model 2's (if Model 5 converges materially
+    slower, that is a STOP-and-report, not a per-model n_samples change).
+
+Perturbation method = zero (primary); laplace = pre-registered robustness check.
+    On per-epoch z-scored data sample_mean ≈ zero, so the choice is zero vs laplace. zero is
+    primary, decisively because of **stage-dependence**: laplace is a curvature/edge operator that
+    preserves sharp edges (spindles, K-complexes) and flattens smooth stretches (slow waves), so
+    its hiding strength varies by sleep stage and would bias per-class faithfulness on a 5-class
+    problem; zero hides every region uniformly. Also: zero keeps the whole pipeline on one baseline
+    (the oracle/FeatureAblation and concentration use zero), is the cleanest ablation on z-scored
+    EEG ("remove this region's deviation from baseline"), and matches the validated Model 1 / ECG200
+    machinery. laplace is retained as a single-model robustness check (one model, not across the
+    grid), its differing artefact profile being exactly what such a check should probe.
+
+Device — per-method, measured (see §6).
+    FeatureAblation on CPU (44 ms/sample; 50 tiny batch-1 forwards, MPS transfer overhead
+    dominates), Integrated Gradients on MPS (0.71 s vs 1.27 s CPU; one batched forward+backward),
+    KernelSHAP MPS-**batched** (perturbations_per_eval=200: 0.37 s @ n=2000 / 1.34 s @ n=8000, vs
+    ~11.8 s unbatched). The KS device choice is CONTINGENT on batching: unbatched it is faster on
+    CPU, batched it must run MPS (batching is a loss on CPU). Choices verified not to affect
+    results: cross-device attribution agreement max|Δ| ≈ 1e-7–2e-6; batching equivalence
+    max|Δ| = 8e-8.
+
+Target class = PREDICTED class, ladder-wide (CONFIRMED 14 Aug 2026).
+    This is the thesis's central FAITHFULNESS-vs-PLAUSIBILITY distinction appearing as a concrete
+    implementation choice, and should be written up as that distinction in the methods chapter —
+    not as a technical detail. CMI measures whether an explanation reflects what the model ACTUALLY
+    COMPUTED. On a misclassified sample the model made a decision — the wrong one — and the
+    explanation must account for THAT decision. Attributing toward the true class would score an
+    explanation of a decision the model NEVER MADE: that is a PLAUSIBILITY question ("did the model
+    look at the right thing?"), not a FAITHFULNESS one ("does the explanation reflect the
+    computation?"). The headline CMI is therefore predicted-class, identical across the ladder.
+    Not hypothetical: 3 of the 10 stratified sweep samples were misclassified (W→N1, N1→N2, REM→N2),
+    so predicted≠true affects a material fraction of the evaluation set — and disproportionately N1
+    (Model 2 N1 recall ≈ 0.45), the hardest minority stage. True-class attribution remains available
+    as a SEPARATE plausibility analysis if wanted, but never as the faithfulness metric.
+
+Still pending (methodology notebook §3):
+    - Evaluation sample count N: pending the bootstrap stability of CMI/PES vs N at n=8000, which
+      also tests whether the proposed N = 500 is enough and whether the nonlinear CNN's PES drops
+      below Model 1's linear-artifact PES = 1.0.
+
+## Investigation: the KernelSHAP convergence-vs-CMI confound (Model 2 vs Model 5) (14 Aug 2026)
+
+The §2 methodology sweep raised a possible confound that could have manufactured this thesis's
+central claim by artifact: Model 5's attribution rank-stability is WORSE than Model 2's at every
+n_samples (~0.05 lower), yet Model 5's CMI is HIGHER (0.62 vs 0.38 at n=8000). Naively "less
+converged ⇒ noisier ranking ⇒ lower CMI", so the opposite looked suspicious — and an
+under-converged transformer faking a faithfulness change is the most damaging confound available
+here. Investigated directly (Model 2 & 5 seed 0, the 10 methodology samples, n_samples up to
+16000). n_samples stays 8000 ladder-wide; the following is the evidence, not just the setting.
+
+1. DIRECTION-OF-BIAS ARGUMENT (the resolution). "Convergence" (Spearman) and "CMI" are different
+   axes: Spearman measures KernelSHAP ESTIMATOR NOISE (how stably the ranking is pinned down as
+   coalitions are added); CMI measures the important-vs-unimportant SEPARATION (a property of the
+   model + attribution). Estimator noise pushes any ranking toward random, and a random ranking
+   gives DDS ≈ 0 — so **under-convergence deflates CMI toward 0 and can NEVER inflate it.**
+   Measured, not asserted: CMI rises monotonically with n_samples for BOTH models —
+       n_samples   2000    4000    8000    16000
+       Model 2    0.338   0.350   0.379   0.401   (still rising)
+       Model 5    0.529   0.593   0.623   0.665   (still rising)
+   more samples (less noise) ⇒ higher CMI, both models. So Model 5 being LESS converged than
+   Model 2 at n=8000 only DEFLATES its CMI; its true converged CMI advantage is even larger than
+   the observed 0.62 vs 0.38. The asymmetry, stated explicitly: **a HIGH CMI on an under-converged
+   model is SAFE (under-sampling can only have lowered it); a LOW CMI is NOT safe (under-sampling
+   and genuine unfaithfulness both push down and are indistinguishable).** This is exactly why the
+   dip check below exists.
+
+2. THE TOP-k EXONERATION WAS TESTED AND FAILED (recorded as part of the evidence). The hoped-for
+   resolution was that the instability lived only in the ranking TAIL (which the 25-step deletion
+   curves never reach), leaving the CMI-relevant top intact. It does not: Model 5's top-10 ORDER
+   stability lags Model 2's by ~0.05–0.15 at the high-n pairs (e.g. or10 0.67 vs 0.87 at
+   8000→16000), and top-5/10 set overlap lags by ~0.05–0.08. Only the top-25 SET overlap matches
+   (~0.86 both: the same regions are flagged important; their fine ordering is noisier for M5). So
+   the instability DOES reach the top of the ranking the deletion curves use. The comparison is
+   therefore defended by the direction-of-bias argument (1), NOT by the instability being confined
+   to the tail. (Reporting a failed check is deliberate — it is part of the evidential record.)
+
+3. MECHANISM — why Model 5's CMI is genuinely higher (n=8000, 10 samples). Two artifacts ruled out
+   because the models are identical on them: **concentration** 0.091 (M2) vs 0.092 (M5) — Model 5
+   is NOT more concentrated, so the higher CMI is not the mechanical "relies on fewer regions"
+   effect the concentration control exists to catch; and **start confidence** (unperturbed
+   pred-class prob ×100) 77.8 vs 77.7 — no headroom artifact. The driver is genuine separation in
+   the curves: **MoRF** (delete most-relevant first) M2 77.8→54.9 by step 5 vs M5 77.7→**24.9**
+   (far steeper); **LeRF** (delete least-relevant first) M5 HOLDS ~80 through step 10 (a merely
+   fragile model's LeRF would drop — this is the clincher for genuine separation). The
+   random-ranking control confirms it: **KS beats random deletion at step 5 by 35.5 points for M5
+   vs 16.7 for M2** — Model 5's attributions front-load impact ~2× better than chance relative to
+   Model 2's.
+
+4. STATED CMI LIMITATION (present but minor, ratio NOT quantified). Model 5 is somewhat more
+   perturbation-sensitive in general: under RANDOM deletion it drops faster than Model 2 (step-5
+   random MoRF 60.4 vs 71.6). So CMI partly reflects a model's INTRINSIC perturbation sensitivity,
+   not attribution quality alone. This component is minor — dominated by genuine separation (the
+   flat LeRF and the 2× KS-vs-random margin) — but real, and should be stated as a CMI limitation
+   in the methods. The exact split between "genuine faithfulness" and "intrinsic sensitivity" is
+   NOT quantified from what was run; no number is invented for it.
+
+DECISIONS from this investigation:
+   - n_samples = 8000 kept ladder-wide; NOT raised to 16000. Measured directly (not extrapolated):
+     the Model-5-minus-Model-2 Spearman gap is essentially CONSTANT (0.052 at 4000→8000, 0.051 at
+     8000→16000), so it is a STRUCTURAL property (the transformer's Shapley values over 50 regions
+     are inherently harder to estimate), not a sampling deficiency that closes; and CMI has not
+     converged at 16000 either. ~10 h of ladder compute for a marginal (~0.01) Spearman gain and no
+     gap closure is not worth it.
+   - TARGETED dip check adopted (verification placed where the confound is live). Any rung whose CMI
+     shows a DOWNWARD DIP relative to its neighbours gets its top-25 set overlap and top-10 order
+     stability compared against those neighbours, so the dip cannot be an under-sampling artifact.
+     A high CMI needs no such check (per the asymmetry in 1). This replaces a blanket n_samples
+     increase with a check only where under-sampling and genuine unfaithfulness are confusable.
+   Evidence: methodology notebook §1/§2; this investigation was report-only (no notebook/harness
+   change).
+
+## Decision: Model 2 XAI/CMI run — the faithfulness-phase pilot (14 Aug 2026)
+
+Notebook `sleep_edf/notebooks/model2/10_model2_xai_cmi.ipynb` (prepared, not executed — the user runs
+it). Written INLINE (mechanics visible, not behind an opaque helper) because it is also the reference
+the methods chapter is written from. Settings are the phase-level logged decisions — see the "XAI/CMI
+phase parameters", "target class = predicted", "perturbations_per_eval", and convergence-investigation
+entries above; NOT restated here. In brief: n_samples 8000 with perturbations_per_eval 200 (KernelSHAP),
+zero PM, predicted-class target (passed as the harness default target_class=None, so an attribution and
+its deletion curves track the same class), 5 seeds aggregated mean ± std, per-method device split (FA
+CPU, IG MPS, KS MPS-batched, deletion curves + concentration CPU).
+
+Evaluation subset (fixed ladder-wide). N = 500 test epochs stratified by TRUE class (100/class), seed
+42, built once and saved to `results/metrics/xai_eval_subset_idx.npy` (+ a `_meta.json` sidecar), loaded
+thereafter — shared across all 5 seeds and all four models, for the same reason the training subsample
+and validation split are fixed (evaluating models on different samples would confound the ladder
+comparison). Adequacy confirmed by the methodology bootstrap (CMI std ≈ 0.006 at N = 500, mean stable
+from N ≈ 100).
+
+Cell order is deliberate so the cheap work is interpretable while the long one runs: §1 setup · §2
+subset + per-seed misclassification breakdown · §3 FeatureAblation (~2 min, CPU) · §4 Integrated
+Gradients (~1 min, MPS) · §5 SAVE FA+IG before KernelSHAP · §6 CMI for FA/IG (~3 min) · §7 concentration
+(~1.5 min) · §8 FA-vs-IG presentation · §9 KernelSHAP (~56 min, MPS, saves per seed) · §10 KS CMI +
+dip-check numbers · §11 all-three presentation + verdict. §1–§8 run in ~7 min; §9 saves each seed as it
+finishes so an interruption loses at most one seed and a re-run skips seeds already on disk.
+
+Decisions made that were not specified:
+  - Notebook numbering `10_...`: opens the XAI series (10–13 for Models 2–5), continuing past the
+    training notebooks (06–09); Model 1's XAI was 05.
+  - No ground-truth recovery check (Models 2–5 have no readable coefficients). CMI read alongside
+    concentration (the confound control) is the headline, per brief — no substitute invented.
+  - Attribution heatmaps presented as mean attribution per (PREDICTED class × region) over the 30 s
+    epoch, averaged over seeds — the temporal-region analogue of Model 1's stage × band heatmap, grouped
+    by predicted class to match the predicted-class rule.
+  - Dip-check (top-25 set overlap, top-10 order stability, KS n_samples 4000 vs 8000) computed on a
+    25-sample subsample and RECORDED, not applied as pass/fail: Model 2 is the bottom rung with no
+    neighbour to dip against; the numbers exist for the cross-ladder dip-check (any rung whose CMI dips
+    below its neighbours), per the logged policy.
+  - IG cost clarified: the earlier ~710 ms/sample device figure was MPS warm-up on the first calls;
+    steady-state IG is ~5 ms/sample, so §4 is well under a minute (the notebook warms MPS before timing
+    so its printed estimate is honest). No harness change needed.
+  - Artifacts written: `xai_eval_subset_idx.npy` (+meta), `model2_xai_fa_ig_attr.npz`, per-seed
+    `model2_xai_ks_attr_seed{seed}.npy`, `model2_xai_cmi_results.json`, and two heatmap figures.
+## Decision: Model 3 XAI/CMI run — second faithfulness rung, first ladder comparison (14 Aug 2026)
+
+Notebook `sleep_edf/notebooks/model3/11_model3_xai_cmi.ipynb` (prepared, not executed — the user runs
+it). Mirrors the Model 2 XAI notebook (`10_...`) section-for-section, inline and readable; opens as the
+second entry in the XAI series (10–13 for Models 2–5). Only the model changes: Model 3 (medium CNN
+[32,64,64], 93,285 params, RF 1060 ms), its 5 seed checkpoints. All settings, the evaluation subset and
+the code are identical to Model 2 — see the phase-level entries above (n_samples 8000 + pe 200, zero PM,
+predicted-class target, per-method device split FA-CPU/IG-MPS/KS-MPS-batched, N=500, 5 seeds); NOT
+restated. Nothing about Model 3 forced a deviation.
+
+Evaluation subset: LOADS the shared `results/metrics/xai_eval_subset_idx.npy` (built by Model 2) — the
+SAME 500 samples — and RAISES if the file is absent rather than rebuilding, so Model 3 can only ever run
+on the identical subset. Model 3's misclassification profile differs from Model 2's (its N1 recall 0.553
+vs 0.453) — surfaced per seed because the predicted-class rule means attribution follows the predicted,
+not the true, class.
+
+Cell order identical to Model 2 (cheap methods → save → CMI/concentration/presentation → KernelSHAP last,
+saved per seed). Measured Model 3 costs (medium CNN): FA ~2 min, IG ~0.5 min, CMI(FA+IG) ~4 min,
+concentration ~2 min, KernelSHAP ~37 min (its batched KS is ~0.9 s/sample, a touch faster than Model 2's
+shallow at ~1.3 s). §1–§8 ≈ ~10 min, then §9 ~37 min.
+
+New in §11 — the first LADDER COMPARISON (Model 2 vs Model 3): CMI, DDS, PES and concentration per method,
+plus cross-method rank agreement, with deltas. Model 2's numbers are read from its saved
+`model2_xai_cmi_results.json` (never hardcoded); if that file is absent (Model 2's §11 not yet run) the
+cell says so and skips. Model 3 is the rung where the hypothesised faithfulness DIP would appear, so §10's
+dip-check numbers (KS top-25 set overlap, top-10 order stability, n_samples 4000 vs 8000) are framed for
+the live comparison: if Model 3's KernelSHAP CMI comes in below Model 2's, those numbers say whether it is
+a genuine dip or an under-sampling artefact (under-sampling deflates CMI). Watch-threads surfaced
+explicitly in §11: PES (Model 2 stayed ~1.0; if it stays pinned, CMI ≈ DDS in this setting — a finding
+about the metric), concentration (confound control), and whether the GAP-head heatmaps stay near-uniform
+within the epoch despite the 1060 ms RF.
+
+Decisions made that were not specified:
+  - §2 is load-ONLY (raises if the shared subset is missing) rather than build-or-load, to guarantee Model
+    3 uses the identical 500 samples Model 2 used.
+  - Model 3's results JSON additionally stores the cross-method `agreement` values (Model 2's JSON predates
+    that key); the §11 comparison therefore reads Model 2's agreement by RECOMPUTING it from Model 2's
+    saved attribution arrays (`model2_xai_fa_ig_attr.npz` + per-seed KS `.npy`) when the JSON lacks it, and
+    skips that delta gracefully if those files are incomplete (e.g. Model 2's KernelSHAP not yet finished).
+  - Notebook `11_...`, figures `sleep_edf_11_model3_xai_*`, artifacts `model3_xai_*` — parallel to Model 2's
+    `10_/sleep_edf_10_/model2_xai_*`.
