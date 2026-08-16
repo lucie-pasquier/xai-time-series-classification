@@ -1,0 +1,12 @@
+{
+  "model": "model5_transformer",
+  "analysis": "attention_rollout_secondary_pre_registered",
+  "roll_std_across_regions": 0.007334919608067283,
+  "CMI_mean": 0.07757759355017743,
+  "CMI_std": 0.034695655074555104,
+  "DDS_mean": 0.04517006984029102,
+  "PES_mean": 0.2792,
+  "agreement_with_FA": 0.02319085199813079,
+  "agreement_with_IG": 0.034491735894357736,
+  "primary_last_layer_CMI_mean": 0.057686349126216584
+}

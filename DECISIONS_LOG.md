@@ -1490,3 +1490,145 @@ Judgement calls: attention extracted inline (harness stub unimplemented; verifie
 `pair_agree` made robust to undefined per-sample Spearman (skips constant/near-uniform-attention samples and
 reports the fraction skipped — heavy skipping is itself the uniform-attention signal); attention treated as
 Model-5-only in the ladder comparison; artifacts `model5_xai_*` / figures `sleep_edf_13_model5_xai_*`.
+
+## Decision: Model 5 attention — last-layer is the primary result; rollout is a secondary follow-up (16 Aug 2026)
+
+Diagnostic ruled out an extraction bug (post-softmax weights confirmed — rows sum to 1.0; last-layer output
+bit-identical for a predicted-W vs predicted-N3 sample while layer 0 differs by 0.9995 on the same pair — so
+the pipeline reacts to the input, the last layer does not). The precise finding:
+
+  - Model 5's LAST-LAYER attention is EXACTLY UNIFORM — 1/50 = 0.02, std 0.000000 across all 8 heads — and
+    input-INDEPENDENT (bit-identical for predicted-W vs predicted-N3). Layers 0 and 2 carry input-dependent
+    structure (per-region std 0.0158 and 0.0084); layers 1, 3, 4, 5 are uniform.
+  - This is attention RANK COLLAPSE / over-smoothing (representations collapse so last-layer attention logits
+    are equal across keys -> uniform softmax), a known transformer failure mode, and it is consistent with
+    Model 5's other symptoms: worst rung on the ladder (0.6603 balanced accuracy) and the patch-15 result
+    pointing at sample efficiency rather than resolution.
+  - The resulting attention CMI (0.058 ± 0.033, PES 0.112) is REAL but DEGENERATE, not informative: ranking
+    50 identical values gives an arbitrary order, so MoRF and LeRF delete near-randomly and the curves cannot
+    separate. ANY constant vector scores the same.
+  - Framed precisely against the literature — and the two attention treatments land on DIFFERENT claims:
+    Jain & Wallace (2019) found attention that HAS structure but fails to track feature importance. LAST-LAYER
+    attention here has NO structure to assess (uniform) — the degenerate limiting case, NOT the Jain & Wallace
+    case. ROLLOUT (below) is where the Jain & Wallace case is actually demonstrated: it has structure, and that
+    structure is uncorrelated with feature importance. The write-up must not conflate the two.
+  - Consequence: LAST-LAYER attention's CMI is NON-COMPARABLE to the other three methods on the ladder — FA, KS
+    and IG measure attribution quality, whereas the last-layer score measures the ABSENCE of any attribution at
+    all. It must not be read as a fourth point on the same faithfulness scale.
+
+DECISION: last-layer attention STANDS as the primary reported attention result — it is what practitioners read
+off a model, and switching the reduction after seeing it was degenerate would be selecting the recipe that
+produces a usable answer. Attention ROLLOUT (Abnar & Zuidema 2020) is run as a clearly-labelled SECONDARY
+analysis (§13, appended to the Model 5 notebook after the primary cells; it does not re-run or touch
+KernelSHAP), saved to a SEPARATE file (`model5_xai_rollout_results.json`) so the primary results JSON is
+untouched.
+
+ROLLOUT RESULT (run 16 Aug 2026) — this is where the stronger claim comes from. Rollout is NON-degenerate: it
+propagates attention through all layers via the residual path (0.5A+0.5I per layer, row-normalised, multiplied
+across layers), so it incorporates layers 0/2 where input-dependent structure survives. But its faithfulness
+is essentially nil: **CMI 0.078 ± 0.035, PES 0.279, and rank agreement 0.023 (FA) / 0.034 (IG) — i.e. ~ZERO
+correlation with what the perturbation methods identify as important.** PES 0.279 means rollout does not even
+get the deletion DIRECTION consistently right, against ~1.0 PES saturation for every other method on every
+rung.
+
+  - THIS is the Jain & Wallace case, and it is now properly DEMONSTRABLE: attention that HAS structure but
+    whose structure is UNCORRELATED with feature importance. Their NLP finding reproduced in a TIME-SERIES
+    setting — the open question named in the proposal. The correlation is well-defined here precisely because
+    rollout is non-degenerate (unlike last-layer, where a constant vector makes Spearman undefined).
+  - BOUND THE CLAIM. This transformer UNDERFIT (0.6603 balanced accuracy, the worst rung on the ladder), and
+    attention collapse plausibly FOLLOWS from underfitting. The demonstrated claim is that attention failed as
+    an explanation FOR THIS MODEL. Whether it would fail for a WELL-FIT transformer on this task is UNTESTED
+    and is named as FUTURE WORK — not claimed here.
+  - PRE-REGISTRATION (both treatments specified BEFORE results were seen): last-layer as PRIMARY with a stated
+    rationale (what practitioners read off a model; testing raw attention, not a repaired version), and rollout
+    PRE-REGISTERED as the contingency for a degenerate last-layer. Neither was chosen after seeing which gave a
+    usable answer. This is what makes the negative result credible rather than a post-hoc search.
+
+Submission-prep flag (NOT actioned — needs a decision): `harness/xai/attention.py` is an unimplemented STUB
+(raises NotImplementedError) with an ECG200-era docstring ("ECG inputs", "(n_samples, n_timesteps)", a CLS-
+token option that does not apply — the transformer mean-pools). It is UNUSED by Model 5 (attention is
+extracted inline, verified to match model() logits exactly). A stub that looks like the method's home but
+isn't will confuse a reader of the repo. Options: (a) implement it to match the notebook's inline extraction
+(last-layer, mean-heads, attention-received + a rollout function), or (b) remove it. Recommend implementing to
+match, so the repo has a single canonical attention wiring — but this is the supervisor's call; not changed
+here.
+
+## Investigation: Model 5's IG anomaly — attention-collapse mechanism REFUTED, reframed as a method-family split (16 Aug 2026)
+
+Across the ladder IG barely moves (0.387 / 0.427 / 0.427 / 0.432) while at Model 5 FA jumps +0.170 to
+0.654 and KS +0.131 to 0.610, IG only +0.005; FA-IG rank agreement falls from ~0.70 (CNNs) to 0.275.
+Hypothesis tested: Model 5's attention rank collapse (last-layer exactly uniform; layers 1/3/4/5 uniform,
+only 0/2 structured) smears the backward gradients the same way it flattened attention, so IG reads
+flattened gradients while FA/KS (forward-only) are unaffected. Diagnostic only (existing checkpoints + saved
+eval subset; no KernelSHAP; nothing changed).
+
+REFUTED — the attention-collapse → smeared-gradients mechanism. Four independent lines of evidence:
+  - Per-layer gradient magnitude (transformer, seed 0) is uniform ~4e-05 across ALL six encoder layers; the
+    structured layers (0, 2) and the collapsed layers (1, 3, 4, 5) are indistinguishable. The direct test is
+    negative — gradients do not collapse where attention does.
+  - IG is NOT smeared: its per-region coefficient of variation is 1.374 vs FA's 0.885 — IG is MORE structured
+    across regions than FA, not flatter. IG is ordered differently from FA, not flattened.
+  - Sample-level: correlation between per-sample attention structure and per-sample IG-FA agreement is 0.078
+    — essentially zero. The sample-level link the hypothesis predicts is absent.
+  - The effect TRAVELS to patch-15 (FA CMI 0.559, IG CMI 0.402, FA-IG agreement 0.332; IG CoV 1.52), a
+    transformer with 200 tokens and a different attention structure. A mechanism specific to patch-60's
+    particular collapse cannot explain an effect that also appears at patch-15.
+  - Also ruled out (alternative baseline explanation): IG completeness residual is 0.0003 (transformer) and
+    0.0008 (CNN) — the path integral is exact, so the zero-baseline-on-patch-embedding concern does not hold.
+
+REFRAMING (to write up instead of the refuted mechanism): IG's CMI is approximately MODEL-INVARIANT at ~0.4
+across five models — 0.387 / 0.427 / 0.427 / 0.432 on the ladder and 0.402 on patch-15 — spanning ~100x in
+parameters and two architecture families. FA and KS instead track the model, rising and then jumping at the
+transformer. This is a PERTURBATION-vs-GRADIENT family split: FA and KS reward deletion impact — the same
+quantity CMI's deletion curves measure — whereas IG measures path-integrated gradients, a different quantity
+with no guarantee of aligning with discrete deletion impact. The split is already present on the CNNs
+(cross-method agreement ~0.70, not 1.0) and WIDENS at the transformer.
+
+HONEST BOUNDARY (preserve in the write-up): WHY the split widens specifically at the transformer is NOT
+mechanistically established. The evidence supports the negative (collapse mechanism refuted) and the
+reframing (IG model-invariant ~0.4; FA/KS rise; a method-family split); it does NOT support a causal story
+for the widening. Do not claim one.
+
+BOUND ON THE HEADLINE FINDING (belongs in the discussion): two of the three shared methods are aligned with
+what CMI measures — FA is near-CIRCULAR with it by construction (single-region deletion impact vs cumulative
+deletion in FA's own order), and KS rewards the same deletion impact. The one method that measures a
+genuinely DIFFERENT quantity (IG, path-integrated gradients) does NOT rise across the ladder. So the CMI
+trend Models 2->5 partly reflects WHAT CMI MEASURES (deletion impact), not only a property of the models.
+This bounds the headline "faithfulness rises with complexity" claim: it is strongest for the deletion-based
+methods and is not corroborated by the gradient-based one. State this explicitly.
+
+## Decision: random-attribution baseline — the CMI floor (16 Aug 2026)
+
+Notebook `sleep_edf/notebooks/baseline/00_random_baseline.ipynb` (prepared, not executed). PURPOSE: calibrate
+the CMI scale. The ladder's CMI (0.387–0.654) had no floor reference, so a reader could not tell whether 0.39
+is good — sharper given PES saturates at ~1.0 (its bar looks low but the study did not show how low). Random
+attribution vectors over the 50 regions are pushed through the EXISTING deletion-curve + CMI machinery — no
+attribution method is run; random vectors replace the attributions. Everything else matches the main runs so
+the floor is directly comparable: same fixed N=500 eval subset (loaded, never regenerated), zero PM,
+predicted-class target, same 5 MODEL seeds aggregated mean±std, same deletion settings (25 steps, MoRF/LeRF).
+
+RANDOM-VECTOR SEED: **20260816** — explicit and INDEPENDENT of the model seeds. One `RandomState(20260816)` is
+consumed in the fixed order rung(2,3,4,5) → model-seed(0–4) → sample(0–499), drawing a FRESH `rand(50)` per
+(model, seed, sample) — fully reproducible, and per-sample variance not understated. Per-model runtime ~1.5 /
+2 / 6 / 7 min (Models 2/3/4/5); ~16 min total. Saved to `random_floor_results.json`.
+
+FLOOR VALUES: to be filled in once the user runs it. Expected: random CMI ≈ 0 (a random MoRF/LeRF ordering
+gives ~symmetric DDS, so |DDS|≈0 and CMI≈0).
+
+PES FRAMING CORRECTION (important, and it changes what the check reports): PES = fraction-positive minus
+fraction-negative of the per-sample DDS, so its CHANCE value is ~0, NOT 0.5. A random ranking gets the
+deletion direction right about half the time (fraction-positive ≈ 0.5), which corresponds to PES ≈ 0 (= 0.5 −
+0.5). The "~0.5" intuition is the fraction-positive = (1 + PES)/2, reported alongside. So the check asks
+whether random PES sits near 0: near 0 ⇒ PES DISCRIMINATES (the ladder's ~1.0 is real sign-consistency, not
+saturation on garbage — reassuring); well away from 0 ⇒ the metric is positively biased even for meaningless
+attributions (flag prominently). The notebook reports both random PES and the implied fraction-positive.
+
+ORACLE VERIFICATION (done, zero new expensive compute): FeatureAblation(zero) was checked against the
+single-region-deletion reliance (`region_reliance`, the quantity the concentration measure uses) on 6 samples
+of Model 2 seed 0. **max|Δ| = 0.000e+00 — EXACT.** So "how close to the ORACLE" (the summary's framing for KS
+and IG) is a DEMONSTRATED equivalence on Sleep-EDF, not merely asserted from the harness design. (This is the
+single-region reliance, not the expensive cumulative/greedy oracle, which was out of scope.)
+
+Summary notebook: a new §10 was APPENDED (floor table + margins above floor + attention-vs-floor, plus a
+CMI-vs-rung plot with the random floor as a horizontal reference line). No other summary section changed; the
+§4 plot was left untouched (§10 redraws its own). No model-specific notebook was touched.
