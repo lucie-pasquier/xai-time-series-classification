@@ -1,6 +1,6 @@
 # Evaluating XAI Faithfulness Across Model Complexity for Time Series Classification
 
-** Author: Lucie Pasquier**
+**Author: Lucie Pasquier**
 Supervised by Dr Felipe Tobar
 
 A thesis submitted in fulfilment of the requirements for the degree of
