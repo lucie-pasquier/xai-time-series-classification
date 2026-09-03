@@ -84,3 +84,13 @@ dmypy.json
 
 # Reference clones (read-only, never part of this project)
 _reference/
+
+# ── Kept locally, not published to GitHub (thesis-submission housekeeping) ────
+# These are untracked from git (git rm --cached); local copies are unaffected.
+ecg200/
+DECISIONS_LOG.md
+NOTICE
+_multiseed_results.json
+_regression.log
+_tf.log
+conftest.py

@@ -1,157 +1,62 @@
-# XAI Faithfulness Evaluation Across Model Complexity for Time Series Classification
+# Evaluating XAI Faithfulness Across Model Complexity for Time Series Classification
 
-**Author**: Lucie Pasquier  
-**Programme**: MSc, Imperial College London  
-**Dataset**: ECG200 (UCR Time Series Archive)
+**Lucie Pasquier**
+Supervised by Dr Felipe Tobar
 
----
-
-## Project overview
-
-This project evaluates the faithfulness of three explainability methods —
-**TimeSHAP**, **Integrated Gradients**, and **attention weights** — across five
-models of increasing complexity trained on the ECG200 binary ECG classification
-task. The primary faithfulness metric is **CMI** (Consistency-Magnitude-Index;
-Šimić, Veas & Sabol, 2025).
-
-### Models
-
-| # | Model | Library |
-|---|-------|---------|
-| 1 | Bandpass features + Logistic Regression | `scipy` / `scikit-learn` |
-| 2 | Shallow 1D CNN | PyTorch |
-| 3 | Medium 1D CNN | PyTorch |
-| 4 | Deep 1D CNN | PyTorch |
-| 5 | Transformer | PyTorch |
-
-### XAI methods
-
-| Method | Applicable models | Module |
-|--------|-------------------|--------|
-| TimeSHAP | All | `src/xai/timeshap.py` |
-| Integrated Gradients | Models 2–5 | `src/xai/integrated_gradients.py` |
-| Attention weights | Model 5 | `src/xai/attention.py` |
+A thesis submitted in fulfilment of the requirements for the degree of
+**Master of Science in Artificial Intelligence Applications and Innovation**,
+Imperial College London.
 
 ---
 
-## Code organisation rule
+## About this repository
 
-> **Reusable logic lives in `.py` modules under `src/`.  
-> Notebooks import from `src/` — they never reimplement logic.**
+This repository holds the code written for the thesis above. It is shared for
+**transparency and completeness** — so that the methods and experiments described
+in the thesis can be inspected — and is **not intended as a software tool or a
+reusable package**. There is deliberately no installation or "getting started"
+guide: this is the code written to carry out one specific piece of research, not
+something designed to be deployed or run by others.
 
-| Location | What goes here |
-|----------|----------------|
-| `src/data/` | Data loading, normalisation, split management |
-| `src/models/` | Model class definitions and factory functions |
-| `src/xai/` | XAI wrappers, CMI, deletion curves |
-| `src/evaluation/` | Predictive-performance metrics (accuracy, AUC, …) |
-| `src/plotting/` | Shared figure helpers |
-| `notebooks/` | Experiment runs, exploration, thesis figures |
-| `results/` | Figures (`.png`/`.pdf`), metric CSVs, model checkpoints |
-| `tests/` | Unit and integration tests for `src/` |
+## What the work does
 
-If you find yourself writing a function or class definition in a notebook cell,
-**stop and put it in `src/` instead**, then import it in the notebook.
+The thesis studies how the **faithfulness** of post-hoc explanations behaves as
+model complexity increases. It evaluates attribution methods — Feature Ablation,
+KernelSHAP, Integrated Gradients, and (for the transformer) attention weights —
+against a **deletion-curve faithfulness metric**, CMI, the Consistency–Magnitude–
+Index of Šimić, Veas & Sabol (2025). The evaluation runs across a ladder of five
+sleep-staging models of increasing size, on EEG epochs from the Sleep-EDF
+dataset, to ask whether more complex models yield more (or less) faithful
+explanations.
 
----
+## Layout
 
-## Directory structure
+Two Python packages hold the work:
 
-```
-Thesis-Repo/
-├── data/
-│   ├── raw/                    # ECG200 source files — committed to git
-│   │   ├── ECG200_TRAIN.ts
-│   │   ├── ECG200_TEST.ts
-│   │   └── ...
-│   └── processed/              # .npy arrays — git-ignored, regenerated automatically
-│
-├── src/
-│   ├── data/
-│   │   └── preprocessing.py    # load_ecg200(), build_processed_data()
-│   ├── models/
-│   │   ├── linear_baseline.py  # Model 1: bandpass + logistic regression
-│   │   ├── cnn.py              # Models 2–4: Shallow / Medium / Deep 1D CNN
-│   │   └── transformer.py      # Model 5: Transformer
-│   ├── xai/
-│   │   ├── timeshap.py
-│   │   ├── integrated_gradients.py
-│   │   ├── attention.py
-│   │   ├── cmi.py              # CMI faithfulness metric (Šimić et al. 2025)
-│   │   └── deletion_curves.py
-│   ├── evaluation/
-│   │   └── metrics.py          # Accuracy, AUC, confusion matrix helpers
-│   └── plotting/
-│       └── helpers.py          # Shared figure style and plot functions
-│
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_model_linear_baseline.ipynb
-│   ├── 03_model_shallow_cnn.ipynb
-│   ├── 04_model_medium_cnn.ipynb
-│   ├── 05_model_deep_cnn.ipynb
-│   ├── 06_model_transformer.ipynb
-│   └── 07_xai_analysis.ipynb
-│
-├── results/
-│   ├── figures/                # Saved .png / .pdf plots
-│   ├── metrics/                # CMI scores, deletion-curve CSVs
-│   └── checkpoints/            # Saved model weights (.pt files)
-│
-├── tests/
-│   └── test_preprocessing.py
-│
-├── .gitignore
-├── requirements.txt
-└── README.md
-```
+- **`harness/`** — the dataset-agnostic faithfulness apparatus: the attribution
+  wrappers, the region grid and perturbation methods, the deletion curves, and
+  the CMI metric.
+- **`sleep_edf/`** — the Sleep-EDF experiments built on the harness: data
+  loading, the five models, and the notebooks that produce the thesis's results
+  and figures.
 
----
+The notebooks under `sleep_edf/notebooks/` narrate the experiments; the reusable
+logic lives in the two packages and is imported by the notebooks.
 
-## Getting started
+## Code attribution
 
-```bash
-# 1. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate          # macOS / Linux
-# .venv\Scripts\activate           # Windows
+This code adapts and uses third-party work. The notices below — together with the
+per-file headers in the source — provide the attribution required by their
+licences.
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. (Optional) CPU-only PyTorch (smaller download)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# 4. Run the data sanity-check notebook
-jupyter notebook notebooks/01_data_exploration.ipynb
-```
-
-The first call to `load_ecg200()` automatically runs `build_processed_data()`,
-which reads the raw `.ts` files and writes processed `.npy` arrays to
-`data/processed/`. Subsequent calls load directly from those files.
-
----
-
-## Testing
-
-```bash
-pytest tests/ -v
-```
-
----
-
-## References
-
-- Šimić, A., Veas, E., & Sabol, V. (2025). *A comprehensive analysis of
-  perturbation methods in explainable AI feature attribution validation for
-  neural time series classifiers.*
-  [CMI reference implementation](https://github.com/perturbationeffect/cmi-am-validation-for-dl-ts-classifiers)
-
-- Dau, H. A., et al. (2019). The UCR time series archive.
-  *IEEE/CAA Journal of Automatica Sinica*, 6(6), 1293–1305.
-
-- Bento, J., et al. (2021). TimeSHAP: Explaining recurrent models through
-  sequence perturbations. *KDD 2021*.
-
-- Sundararajan, M., Taly, A., & Yan, Q. (2017). Axiomatic attribution for deep
-  networks. *ICML 2017*.
+- **CMI metric and deletion-curve construction** — adapted from the reference
+  implementation accompanying Šimić, A., Veas, E., & Sabol, V. (2025), *A
+  comprehensive analysis of perturbation methods in explainable AI feature
+  attribution validation for neural time series classifiers*
+  ([repository](https://github.com/perturbationeffect/cmi-am-validation-for-dl-ts-classifiers)),
+  used under the **Apache License 2.0**. The specific adaptations are documented
+  in `harness/xai/cmi.py`, `harness/xai/deletion_curves.py`, and
+  `harness/xai/perturbation.py`.
+- **Attribution methods** — Feature Ablation, KernelSHAP and Integrated Gradients
+  are computed with [Captum](https://captum.ai) (Kokhlikyan et al., 2020), used
+  under the **BSD-3-Clause** licence.
