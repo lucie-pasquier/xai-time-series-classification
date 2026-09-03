@@ -12,11 +12,8 @@ Imperial College London.
 ## About this repository
 
 This repository holds the code written for the thesis above. It is shared for
-**transparency and completeness** — so that the methods and experiments described
-in the thesis can be inspected — and is **not intended as a software tool or a
-reusable package**. There is deliberately no installation or "getting started"
-guide: this is the code written to carry out one specific piece of research, not
-something designed to be deployed or run by others.
+**transparency and completeness**, so that the methods and experiments described
+in the thesis can be inspected.
 
 ## What the work does
 
